@@ -15,7 +15,7 @@ export const requireCsrf: MiddlewareHandler<{ Bindings: Env }> = async (c, next)
   const header = c.req.header('X-CSRF-Token');
   const cookieHeader = c.req.header('Cookie') ?? '';
   const match = cookieHeader.match(/(?:^|; )csrf_token=([^;]+)/);
-  const cookieToken = match ? decodeURIComponent(match[1]) : null;
+  const cookieToken = match?.[1] ? decodeURIComponent(match[1]) : null;
 
   if (!header || !cookieToken || header !== cookieToken) {
     return c.json({ error: 'CSRF token mismatch' }, 403);
