@@ -12,6 +12,27 @@ import {
 
 const app = new Hono<{ Bindings: Env }>();
 
+/** 仕様書4.1: ログイン・登録どちらもTurnstile検証を必須とする */
+async function verifyTurnstile(env: Env, token: string, remoteIp?: string): Promise<boolean> {
+  if (!token) return false;
+  const form = new URLSearchParams();
+  form.set('secret', env.TURNSTILE_SECRET_KEY);
+  form.set('response', token);
+  if (remoteIp) form.set('remoteip', remoteIp);
+
+  try {
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form,
+    });
+    const json = await res.json<{ success: boolean }>();
+    return json.success === true;
+  } catch {
+    return false; // 検証サービス自体に問題がある場合は安全側に倒して拒否
+  }
+}
+
 /**
  * POST /api/register
  * 仕様書4.1: Turnstile検証 → 初期資金付与 → ソルト付きハッシュでパスワード保存
@@ -19,7 +40,9 @@ const app = new Hono<{ Bindings: Env }>();
 app.post('/register', async (c) => {
   const body = await c.req.json<{ username: string; password: string; turnstileToken: string }>();
 
-  // TODO: Turnstile検証 (siteverify API呼び出し、c.env.TURNSTILE_SECRET_KEY使用)
+  const remoteIp = c.req.header('CF-Connecting-IP') ?? undefined;
+  const turnstileOk = await verifyTurnstile(c.env, body.turnstileToken, remoteIp);
+  if (!turnstileOk) return c.json({ error: 'bot verification failed' }, 400);
 
   const salt = generateSalt();
   const hash = await hashPassword(body.password, salt);
@@ -48,7 +71,9 @@ app.post('/register', async (c) => {
 app.post('/login', async (c) => {
   const body = await c.req.json<{ username: string; password: string; turnstileToken: string }>();
 
-  // TODO: Turnstile検証
+  const remoteIp = c.req.header('CF-Connecting-IP') ?? undefined;
+  const turnstileOk = await verifyTurnstile(c.env, body.turnstileToken, remoteIp);
+  if (!turnstileOk) return c.json({ error: 'bot verification failed' }, 400);
 
   const user = await c.env.DB.prepare(`SELECT * FROM users WHERE username = ?`)
     .bind(body.username)
@@ -114,7 +139,7 @@ app.post('/logout', requireCsrf, requireAuth, async (c) => {
   const cookieName = c.env.SESSION_COOKIE_NAME || 'session';
   const cookieHeader = c.req.header('Cookie') ?? '';
   const match = cookieHeader.match(new RegExp(`(?:^|; )${cookieName}=([^;]+)`));
-  if (match) {
+  if (match?.[1]) {
     const idHash = await hashSessionToken(decodeURIComponent(match[1]));
     await c.env.DB.prepare(`DELETE FROM sessions WHERE id_hash = ?`).bind(idHash).run();
   }
