@@ -11,7 +11,7 @@ declare module 'hono' {
 function getCookie(req: Request, name: string): string | null {
   const header = req.headers.get('Cookie') ?? '';
   const match = header.match(new RegExp(`(?:^|; )${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
 /** ログイン必須API用ミドルウェア。session cookie を検証し c.set('auth', ...) する */
