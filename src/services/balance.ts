@@ -58,14 +58,187 @@ export function toAmountC(price: number, quantity: number, rate: number): number
   return Math.floor(yenOrUsd * 100);
 }
 
-/** 保有株数のうち、既存のPending指値売りロックを除いた「売却可能株数」を返す */
+/** 保有株数のうち、既存のPending指値売りロック(trades.locked_quantity)を除いた「売却可能株数」を返す */
 export async function getSellableQuantity(
   db: D1Database,
   userId: string,
   code: string,
   market: Market,
 ): Promise<number> {
-  // TODO: trades.status='HOLD' の合計quantityから、
-  // orders(status='PENDING', order_type='SELL_LIMIT') でロック中の株数を差し引く
-  throw new Error('not implemented');
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(quantity - locked_quantity), 0) AS sellable
+       FROM trades
+       WHERE user_id = ? AND code = ? AND market = ? AND status = 'HOLD'`,
+    )
+    .bind(userId, code, market)
+    .first<{ sellable: number }>();
+  return row?.sellable ?? 0;
+}
+
+/**
+ * SELL_LIMIT注文受付時: 保有中(HOLD)ロットをFIFO(buy_date昇順)でquantity分ロックする。
+ * 全量ロックできればロットごとの内訳（trade_id, locked_qty）を返し、できなければnullを返す
+ * （呼び出し元は注文全体を却下する。全量ロック or 不成立で部分約定は行わない）。
+ */
+export async function lockSellableQuantity(
+  db: D1Database,
+  userId: string,
+  code: string,
+  market: Market,
+  quantity: number,
+): Promise<{ tradeId: string; lockQty: number }[] | null> {
+  const { results } = await db
+    .prepare(
+      `SELECT id, quantity, locked_quantity FROM trades
+       WHERE user_id = ? AND code = ? AND market = ? AND status = 'HOLD'
+         AND quantity > locked_quantity
+       ORDER BY buy_date ASC`,
+    )
+    .bind(userId, code, market)
+    .all<{ id: string; quantity: number; locked_quantity: number }>();
+
+  let remaining = quantity;
+  const plan: { tradeId: string; lockQty: number }[] = [];
+  for (const row of results ?? []) {
+    if (remaining <= 0) break;
+    const available = row.quantity - row.locked_quantity;
+    const take = Math.min(available, remaining);
+    plan.push({ tradeId: row.id, lockQty: take });
+    remaining -= take;
+  }
+  if (remaining > 0) return null; // 全量確保できなかった
+
+  const stmts = plan.map(({ tradeId, lockQty }) =>
+    db
+      .prepare(`UPDATE trades SET locked_quantity = locked_quantity + ? WHERE id = ?`)
+      .bind(lockQty, tradeId),
+  );
+  await db.batch(stmts);
+  return plan;
+}
+
+/** キャンセル・期限切れ時: ロックしていた株数を解除する */
+export async function unlockQuantity(
+  db: D1Database,
+  tradeId: string,
+  qty: number,
+): Promise<void> {
+  await db
+    .prepare(`UPDATE trades SET locked_quantity = locked_quantity - ? WHERE id = ?`)
+    .bind(qty, tradeId)
+    .run();
+}
+
+/**
+ * 成行売り用: ロック中(locked_quantity)を除いた売却可能株数からFIFOで消費プランを組む。
+ * 併せて対象ロットの詳細（原価計算用）も返す。全量確保できなければnull。
+ */
+export async function selectFifoLotsForSale(
+  db: D1Database,
+  userId: string,
+  code: string,
+  market: Market,
+  quantity: number,
+): Promise<{ lots: HoldLot[]; plan: { tradeId: string; qty: number }[] } | null> {
+  const { results } = await db
+    .prepare(
+      `SELECT id, quantity, locked_quantity, buy_date, buy_price, buy_rate FROM trades
+       WHERE user_id = ? AND code = ? AND market = ? AND status = 'HOLD'
+         AND quantity > locked_quantity
+       ORDER BY buy_date ASC`,
+    )
+    .bind(userId, code, market)
+    .all<HoldLot>();
+
+  const lots = results ?? [];
+  let remaining = quantity;
+  const plan: { tradeId: string; qty: number }[] = [];
+  for (const lot of lots) {
+    if (remaining <= 0) break;
+    const available = lot.quantity - lot.locked_quantity;
+    const take = Math.min(available, remaining);
+    if (take > 0) plan.push({ tradeId: lot.id, qty: take });
+    remaining -= take;
+  }
+  if (remaining > 0) return null;
+  return { lots, plan };
+}
+
+export interface HoldLot {
+  id: string;
+  quantity: number;
+  locked_quantity: number;
+  buy_date: string;
+  buy_price: number;
+  buy_rate: number;
+}
+
+/**
+ * 指定ロット群（FIFOで選定済み、または明示指定）をSOLDへ変換するSQL文を組み立てる。
+ * ロットのquantityと消費数が一致すれば当該行をSOLDへ更新、
+ * 一致しなければ「残数量を引いたHOLD行」+「消費分の新規SOLD行」に分割する。
+ * 部分約定ではなく、あくまで1回の売却注文の全量分をロット単位で内部処理する。
+ */
+export function buildSellStatements(
+  db: D1Database,
+  lots: HoldLot[],
+  plan: { tradeId: string; qty: number }[],
+  sellDate: string,
+  sellPrice: number,
+  sellRate: number,
+): { stmts: D1PreparedStatement[]; totalProfitC: number; proceedsC: number } {
+  const stmts: D1PreparedStatement[] = [];
+  let totalProfitC = 0;
+  let proceedsC = 0;
+
+  const lotById = new Map(lots.map((l) => [l.id, l]));
+
+  for (const { tradeId, qty } of plan) {
+    const lot = lotById.get(tradeId);
+    if (!lot) continue;
+
+    const soldProceedsC = toAmountC(sellPrice, qty, sellRate);
+    const boughtCostC = toAmountC(lot.buy_price, qty, lot.buy_rate);
+    const profitC = soldProceedsC - boughtCostC;
+    totalProfitC += profitC;
+    proceedsC += soldProceedsC;
+
+    if (qty === lot.quantity) {
+      // 全量売却: この行をそのままSOLDへ
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE trades SET status = 'SOLD', sell_date = ?, sell_price = ?, sell_rate = ?,
+               profit_jpy_c = ?, locked_quantity = locked_quantity - ?
+             WHERE id = ?`,
+          )
+          .bind(sellDate, sellPrice, sellRate, profitC, qty, tradeId),
+      );
+    } else {
+      // 部分売却: 元の行を残数量に縮小し、消費分を新規SOLD行として追加
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE trades SET quantity = quantity - ?, locked_quantity = locked_quantity - ?
+             WHERE id = ?`,
+          )
+          .bind(qty, qty, tradeId),
+      );
+      stmts.push(
+        db
+          .prepare(
+            `INSERT INTO trades
+               (id, user_id, code, symbol, name, market, quantity, locked_quantity,
+                buy_date, buy_price, buy_rate, status, sell_date, sell_price, sell_rate, profit_jpy_c)
+             SELECT ?, user_id, code, symbol, name, market, ?, 0,
+                buy_date, buy_price, buy_rate, 'SOLD', ?, ?, ?, ?
+             FROM trades WHERE id = ?`,
+          )
+          .bind(crypto.randomUUID(), qty, sellDate, sellPrice, sellRate, profitC, tradeId),
+      );
+    }
+  }
+
+  return { stmts, totalProfitC, proceedsC };
 }
