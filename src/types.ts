@@ -71,6 +71,7 @@ export interface TradeRow {
   name: string;
   market: Market;
   quantity: number;
+  locked_quantity: number;
   buy_date: string;
   buy_price: number;
   buy_rate: number;
@@ -92,6 +93,7 @@ export interface OrderRow {
   target_price: number | null;
   quantity: number;
   locked_amount_c: number;
+  locked_lots: string | null; // SELL_LIMIT用: JSON文字列 [{trade_id, qty}]
   ordered_at: number;
   expires_at: number | null;
   checked_until: number | null;
