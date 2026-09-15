@@ -23,13 +23,38 @@ app.route('/api/fx', fxRoutes);
 app.route('/api/admin', adminRoutes);
 
 // USE_WORKER_PROXY=true の間だけ有効な市場データプロキシ（仕様書5.）
+const ALLOWED_PROXY_HOSTS = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+
 app.get('/api/proxy', async (c) => {
   if (c.env.USE_WORKER_PROXY !== 'true') {
     return c.notFound();
   }
-  // TODO: services/marketData.ts の fetchChart を呼び出し、
-  // CORSヘッダー（Access-Control-Allow-Origin, Access-Control-Allow-Credentials）を付与して返す
-  return c.json({ error: 'not implemented' }, 501);
+  const target = c.req.query('url');
+  if (!target) return c.json({ error: 'missing url' }, 400);
+
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return c.json({ error: 'invalid url' }, 400);
+  }
+  if (!ALLOWED_PROXY_HOSTS.includes(parsed.hostname)) {
+    return c.json({ error: 'host not allowed' }, 403);
+  }
+
+  const upstream = await fetch(parsed.toString(), {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+  });
+  const body = await upstream.text();
+  return new Response(body, {
+    status: upstream.status,
+    headers: {
+      'Content-Type': upstream.headers.get('Content-Type') ?? 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Cache-Control': 'no-store',
+    },
+  });
 });
 
 app.notFound((c) => c.json({ error: 'Not Found' }, 404));
