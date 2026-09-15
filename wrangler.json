@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "demo-trade-app",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "demo-trade-db",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "USE_WORKER_PROXY": "true",
+    "SESSION_COOKIE_NAME": "session",
+    "SESSION_TTL_DAYS": "30",
+    "LOGIN_MAX_FAILS": "5",
+    "LOGIN_LOCKOUT_MINUTES": "15",
+    "ORDER_EXPIRY_MAX_DAYS": "14",
+    "MARKET_DATA_CACHE_SECONDS": "60",
+    "SLIPPAGE_SAFETY_FACTOR": "1.05",
+    "FX_EXCHANGE_RATE_LIMIT_PER_MIN": "5"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
