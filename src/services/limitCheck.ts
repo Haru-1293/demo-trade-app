@@ -1,29 +1,26 @@
 import type { Env, OrderRow } from '../types';
-import { getOhlcHistory } from './marketData';
-import { creditCash, currencyOf } from './balance';
+import { getOhlcHistory, getUsdJpyRate } from './marketData';
+import { currencyOf, buildSellStatements, type HoldLot } from './balance';
 
 /**
  * 仕様書 4.4: ユーザーのアクセス（ログイン/portfolio/orders取得）をトリガーに、
  * PENDING状態の指値注文をバックグラウンドで約定判定する。
  */
-export async function checkPendingLimitOrders(
-  db: D1Database,
-  userId: string,
-): Promise<void> {
+export async function checkPendingLimitOrders(env: Env, userId: string): Promise<void> {
+  const db = env.DB;
   const now = Math.floor(Date.now() / 1000);
   const { results } = await db
-    .prepare(
-      `SELECT * FROM orders WHERE user_id = ? AND status = 'PENDING'`,
-    )
+    .prepare(`SELECT * FROM orders WHERE user_id = ? AND status = 'PENDING'`)
     .bind(userId)
     .all<OrderRow>();
 
   for (const order of results ?? []) {
-    await checkOneOrder(db, order, now);
+    await checkOneOrder(env, order, now);
   }
 }
 
-async function checkOneOrder(db: D1Database, order: OrderRow, now: number): Promise<void> {
+async function checkOneOrder(env: Env, order: OrderRow, now: number): Promise<void> {
+  const db = env.DB;
   // 期限切れ判定を先に行う
   if (order.expires_at != null && now >= order.expires_at) {
     await expireOrder(db, order);
@@ -36,9 +33,8 @@ async function checkOneOrder(db: D1Database, order: OrderRow, now: number): Prom
 
   const ohlc = await getOhlcHistory(order.symbol, from, to);
 
-  // checked_until の更新は約定・非約定にかかわらず必須（4.4）
-  if (!ohlc) {
-    // データ取得不可: checked_untilは更新しない（次回再取得を試みる）
+  if (!ohlc || ohlc.length === 0) {
+    // データ取得不可: checked_untilは更新せず、次回アクセス時に再取得を試みる
     return;
   }
 
@@ -51,31 +47,109 @@ async function checkOneOrder(db: D1Database, order: OrderRow, now: number): Prom
     (order.order_type === 'SELL_LIMIT' && high >= targetPrice);
 
   if (executed) {
-    await executeLimitOrder(db, order, now);
+    await executeLimitOrder(env, order, now);
   } else {
-    await db
-      .prepare(`UPDATE orders SET checked_until = ? WHERE id = ?`)
-      .bind(to, order.id)
-      .run();
+    // 約定・非約定にかかわらず checked_until の更新は必須（4.4、二重判定防止）
+    await db.prepare(`UPDATE orders SET checked_until = ? WHERE id = ?`).bind(to, order.id).run();
   }
 }
 
-async function executeLimitOrder(db: D1Database, order: OrderRow, now: number): Promise<void> {
-  // TODO: 同一トランザクション（batch）内で以下を実施
-  //  - orders.status = 'EXECUTED', executed_price = target_price, executed_at = now, checked_until = now
-  //  - BUY_LIMIT: trades に新規HOLDレコードを追加（locked_amount_cは指値どおりのため差額返却なし）
-  //  - SELL_LIMIT: 対象tradesをSOLDに更新し、現金をcreditCashで加算、profit_jpy_cを計算
-  throw new Error('not implemented');
+async function executeLimitOrder(env: Env, order: OrderRow, now: number): Promise<void> {
+  const db = env.DB;
+  const executedPrice = order.target_price ?? 0; // 指値どおりの価格で約定（仕様書4.4）
+
+  let rate = 1;
+  if (order.market === 'US') {
+    const quote = await getUsdJpyRate(env);
+    if (!quote) {
+      // 為替データ取得不可: 古いレートで確定させず今回は約定を見送り、次回アクセス時に再試行する
+      return;
+    }
+    rate = quote.price;
+  }
+
+  if (order.order_type === 'BUY_LIMIT') {
+    const tradeId = crypto.randomUUID();
+    const today = new Date().toISOString().slice(0, 10);
+    // locked_amount_c は「指値×数量」で確保済みのため、指値どおり約定するMVPでは差額は生じない
+    const stmts = [
+      db
+        .prepare(
+          `INSERT INTO trades (id, user_id, code, symbol, name, market, quantity, locked_quantity,
+             buy_date, buy_price, buy_rate, status)
+           VALUES (?, ?, ?, ?, (SELECT name FROM symbols WHERE code = ? AND market = ?), ?, ?, 0, ?, ?, ?, 'HOLD')`,
+        )
+        .bind(tradeId, order.user_id, order.code, order.symbol, order.code, order.market, order.market, order.quantity, today, executedPrice, rate),
+      db
+        .prepare(
+          `UPDATE orders SET status = 'EXECUTED', executed_price = ?, executed_at = ?, executed_rate = ?, checked_until = ? WHERE id = ?`,
+        )
+        .bind(executedPrice, now, rate, now, order.id),
+    ];
+    await db.batch(stmts);
+    return;
+  }
+
+  // SELL_LIMIT: 注文時にlocked_lotsへ記録済みのロットのみを対象にSOLDへ変換する
+  if (!order.locked_lots) {
+    // 想定外だが、安全側に倒してデータ不足のまま更新はしない
+    return;
+  }
+  const plan = (JSON.parse(order.locked_lots) as { tradeId: string; lockQty: number }[]).map((p) => ({
+    tradeId: p.tradeId,
+    qty: p.lockQty,
+  }));
+
+  const { results: lotRows } = await db
+    .prepare(
+      `SELECT id, quantity, locked_quantity, buy_date, buy_price, buy_rate FROM trades
+       WHERE id IN (${plan.map(() => '?').join(',')})`,
+    )
+    .bind(...plan.map((p) => p.tradeId))
+    .all<HoldLot>();
+
+  const today = new Date().toISOString().slice(0, 10);
+  const { stmts: sellStmts, proceedsC } = buildSellStatements(
+    db,
+    lotRows ?? [],
+    plan,
+    today,
+    executedPrice,
+    rate,
+  );
+
+  const currency = currencyOf(order.market);
+  const column = currency === 'JPY' ? 'cash_balance_jpy_c' : 'cash_balance_usd_c';
+
+  const stmts = [
+    ...sellStmts,
+    db.prepare(`UPDATE users SET ${column} = ${column} + ? WHERE id = ?`).bind(proceedsC, order.user_id),
+    db
+      .prepare(
+        `UPDATE orders SET status = 'EXECUTED', executed_price = ?, executed_at = ?, executed_rate = ?, checked_until = ? WHERE id = ?`,
+      )
+      .bind(executedPrice, now, rate, now, order.id),
+  ];
+  await db.batch(stmts);
 }
 
 async function expireOrder(db: D1Database, order: OrderRow): Promise<void> {
-  // ロックしていた資金・株数を即時全額解除してEXPIREDへ
+  const stmts = [db.prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?`).bind(order.id)];
+
   if (order.order_type === 'BUY_LIMIT' && order.locked_amount_c > 0) {
-    await creditCash(db, order.user_id, currencyOf(order.market), order.locked_amount_c);
+    const currency = currencyOf(order.market);
+    const column = currency === 'JPY' ? 'cash_balance_jpy_c' : 'cash_balance_usd_c';
+    stmts.push(
+      db.prepare(`UPDATE users SET ${column} = ${column} + ? WHERE id = ?`).bind(order.locked_amount_c, order.user_id),
+    );
+  } else if (order.order_type === 'SELL_LIMIT' && order.locked_lots) {
+    const plan = JSON.parse(order.locked_lots) as { tradeId: string; lockQty: number }[];
+    for (const { tradeId, lockQty } of plan) {
+      stmts.push(
+        db.prepare(`UPDATE trades SET locked_quantity = locked_quantity - ? WHERE id = ?`).bind(lockQty, tradeId),
+      );
+    }
   }
-  // SELL_LIMITの場合はtrades側のロックフラグ解除（別途実装）
-  await db
-    .prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?`)
-    .bind(order.id)
-    .run();
+
+  await db.batch(stmts);
 }
