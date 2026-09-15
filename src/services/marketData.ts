@@ -31,7 +31,7 @@ async function fetchChartRaw(
         headers: { 'User-Agent': 'Mozilla/5.0' },
       });
       if (!res.ok) continue;
-      const json = await res.json();
+      const json = (await res.json()) as any;
       if (json?.chart?.error) continue;
       return json;
     } catch {
@@ -100,7 +100,7 @@ export async function getOhlcHistory(
     const ts = timestamps[i];
     const h = highs[i];
     const l = lows[i];
-    if (ts >= fromUnix && ts <= toUnix && h != null && l != null) {
+    if (ts != null && h != null && l != null && ts >= fromUnix && ts <= toUnix) {
       points.push({ timestamp: ts, high: h, low: l });
     }
   }
