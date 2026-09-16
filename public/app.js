@@ -538,7 +538,10 @@ function connectLiveFeed() {
   if (live.ws && (live.ws.readyState === WebSocket.OPEN || live.ws.readyState === WebSocket.CONNECTING)) return;
   live.manuallyClosed = false;
   try {
-    live.ws = new WebSocket('wss://streamer.finance.yahoo.com/?version=2');
+    // Worker側(/api/live-prices)がYahoo FinanceのWSSへパススルー中継する。
+    // クライアントは自分のドメインにだけ接続すればよい（仕様書4.8）。
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    live.ws = new WebSocket(`${proto}//${location.host}/api/live-prices`);
   } catch {
     return; // WSS非対応環境など。静的表示のままにする。
   }
