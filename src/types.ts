@@ -14,6 +14,7 @@ export type OrderStatus =
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  RATE_LIMIT_KV: KVNamespace;
 
   // vars（wrangler.json参照）
   USE_WORKER_PROXY: string;
