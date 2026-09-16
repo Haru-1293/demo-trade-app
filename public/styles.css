@@ -270,3 +270,21 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .auth-logo .emoji { font-size: 44px; }
 .auth-logo h2 { margin: 8px 0 0; font-size: 18px; }
 .auth-switch { text-align: center; margin-top: 16px; font-size: 13px; color: var(--text-sub); }
+
+/* ---------- ライブ株価フィード ---------- */
+.live-dot {
+  font-size: 8px;
+  color: #cfcfcf;
+  margin-left: 4px;
+  transition: color 0.3s;
+}
+[data-live-symbol] {
+  display: inline-block;
+  transition: color 0.4s;
+}
+[data-live-symbol].flash-up { color: var(--primary); animation: flash-fade 1s ease-out; }
+[data-live-symbol].flash-down { color: var(--danger); animation: flash-fade 1s ease-out; }
+@keyframes flash-fade {
+  0% { opacity: 0.4; }
+  100% { opacity: 1; }
+}
