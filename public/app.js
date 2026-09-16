@@ -72,6 +72,7 @@ const app = document.getElementById('app');
 
 function render() {
   if (!isLoggedIn()) {
+    disconnectLiveFeed();
     renderAuth();
     return;
   }
@@ -117,6 +118,7 @@ async function refreshHeaderBalance() {
 async function renderMain() {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="empty-hint">読み込み中...</div>`;
+  if (state.tab !== 'home') disconnectLiveFeed();
   if (state.tab === 'home') return renderHome(main);
   if (state.tab === 'order') return renderOrder(main);
   if (state.tab === 'history') return renderHistory(main);
@@ -136,12 +138,18 @@ async function renderHome(main) {
 
   const rows = state.portfolio.length
     ? state.portfolio.map((t) => `
-      <div class="list-row">
+      <div class="list-row" data-symbol-row="${t.symbol}">
         <div>
           <div class="name">${t.name} <span class="sub">${t.code}</span></div>
-          <div class="sub">${t.quantity}株 @ ${t.buy_price} (${t.buy_date})</div>
+          <div class="sub">
+            ${t.quantity}株 @ ${t.buy_price} (${t.buy_date})
+            ・現在値 <span data-live-symbol="${t.symbol}" data-buy-price="${t.buy_price}">${t.market === 'JP' ? '¥' : '$'}${t.buy_price}</span>
+            <span class="live-dot" data-live-dot="${t.symbol}" title="ライブ未接続">●</span>
+          </div>
         </div>
-        <div class="value">${t.market === 'JP' ? yenFromPrice(t.buy_price, t.quantity) : usdFromPrice(t.buy_price, t.quantity)}</div>
+        <div class="value" data-live-value="${t.symbol}" data-market="${t.market}" data-quantity="${t.quantity}">
+          ${t.market === 'JP' ? yenFromPrice(t.buy_price, t.quantity) : usdFromPrice(t.buy_price, t.quantity)}
+        </div>
       </div>
     `).join('')
     : `<div class="empty-hint">保有中の銘柄はありません。「注文」タブから購入できます。</div>`;
@@ -152,6 +160,13 @@ async function renderHome(main) {
       ${rows}
     </div>
   `;
+
+  if (state.portfolio.length) {
+    connectLiveFeed();
+    subscribeLive(state.portfolio.map((t) => t.symbol));
+    // 接続前に既にpriceを持っていれば即反映
+    state.portfolio.forEach((t) => applyLivePriceToDom(t.symbol));
+  }
 }
 function yenFromPrice(price, qty) { return '¥' + Math.round(price * qty).toLocaleString(); }
 function usdFromPrice(price, qty) { return '$' + (price * qty).toFixed(2); }
@@ -506,5 +521,174 @@ function renderAuth() {
 
 // Turnstileのコールバック（Turnstileのscriptタグ読み込み後にグローバルとして呼ばれる）
 window.onTurnstileToken = (token) => { window.__turnstileToken = token; };
+
+// ---------- ライブ株価フィード (Yahoo Finance WSS, 表示専用) ----------
+// 注意: 非公式・無保証のストリーミングエンドポイントを直接ブラウザから利用する。
+// 約定判定・残高計算には一切使わない（そちらは引き続きWorker側のHTTP取得のみを正とする）。
+// 接続できない/切れても表示が静的な最終取得価格に留まるだけで、アプリの他機能には影響しない。
+const live = {
+  ws: null,
+  prices: {}, // symbol -> price
+  subscribed: new Set(),
+  reconnectAttempts: 0,
+  manuallyClosed: false,
+};
+
+function connectLiveFeed() {
+  if (live.ws && (live.ws.readyState === WebSocket.OPEN || live.ws.readyState === WebSocket.CONNECTING)) return;
+  live.manuallyClosed = false;
+  try {
+    live.ws = new WebSocket('wss://streamer.finance.yahoo.com/?version=2');
+  } catch {
+    return; // WSS非対応環境など。静的表示のままにする。
+  }
+
+  live.ws.onopen = () => {
+    live.reconnectAttempts = 0;
+    setLiveDots('connected');
+    if (live.subscribed.size) sendSubscribe([...live.subscribed]);
+  };
+
+  live.ws.onmessage = (event) => {
+    try {
+      const outer = JSON.parse(event.data);
+      if (!outer.message) return;
+      const bytes = base64ToBytes(outer.message);
+      const tick = decodeYatickerMinimal(bytes);
+      if (tick.id && typeof tick.price === 'number') {
+        const prev = live.prices[tick.id];
+        live.prices[tick.id] = tick.price;
+        applyLivePriceToDom(tick.id, prev);
+      }
+    } catch {
+      // フォーマット不明のメッセージは無視（表示専用機能のため通信は継続する）
+    }
+  };
+
+  live.ws.onclose = () => {
+    setLiveDots('disconnected');
+    if (live.manuallyClosed) return;
+    const delay = Math.min(10000, 1000 * 2 ** live.reconnectAttempts);
+    live.reconnectAttempts += 1;
+    setTimeout(() => { if (!live.manuallyClosed) connectLiveFeed(); }, delay);
+  };
+
+  live.ws.onerror = () => { /* oncloseに続く。ここでは何もしない */ };
+}
+
+function disconnectLiveFeed() {
+  live.manuallyClosed = true;
+  live.subscribed.clear();
+  if (live.ws) {
+    try { live.ws.close(); } catch { /* noop */ }
+  }
+}
+
+function subscribeLive(symbols) {
+  const newOnes = symbols.filter((s) => s && !live.subscribed.has(s));
+  newOnes.forEach((s) => live.subscribed.add(s));
+  if (!newOnes.length) return;
+  if (live.ws && live.ws.readyState === WebSocket.OPEN) sendSubscribe(newOnes);
+}
+
+function sendSubscribe(symbols) {
+  try { live.ws.send(JSON.stringify({ subscribe: symbols })); } catch { /* noop */ }
+}
+
+function setLiveDots(status) {
+  document.querySelectorAll('[data-live-dot]').forEach((el) => {
+    el.title = status === 'connected' ? 'ライブ接続中' : 'ライブ未接続（最終価格を表示中）';
+    el.style.color = status === 'connected' ? 'var(--primary)' : '#cfcfcf';
+  });
+}
+
+function applyLivePriceToDom(symbol, prevPrice) {
+  const price = live.prices[symbol];
+  const priceEl = document.querySelector(`[data-live-symbol="${cssEscape(symbol)}"]`);
+  const valueEl = document.querySelector(`[data-live-value="${cssEscape(symbol)}"]`);
+  const dotEl = document.querySelector(`[data-live-dot="${cssEscape(symbol)}"]`);
+  if (dotEl) { dotEl.style.color = 'var(--primary)'; dotEl.title = 'ライブ接続中'; }
+  if (!priceEl) return;
+
+  if (typeof price === 'number') {
+    const market = valueEl ? valueEl.dataset.market : null;
+    priceEl.textContent = (market === 'US' ? '$' : '¥') + price.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    if (prevPrice != null && price !== prevPrice) {
+      priceEl.classList.remove('flash-up', 'flash-down');
+      // reflow強制してアニメーションを再トリガー
+      void priceEl.offsetWidth;
+      priceEl.classList.add(price > prevPrice ? 'flash-up' : 'flash-down');
+    }
+  }
+  if (valueEl && typeof price === 'number') {
+    const qty = Number(valueEl.dataset.quantity || '0');
+    const market = valueEl.dataset.market;
+    valueEl.textContent = market === 'US' ? usdFromPrice(price, qty) : yenFromPrice(price, qty);
+  }
+}
+
+function cssEscape(s) {
+  return String(s).replace(/["\\]/g, '\\$&');
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Yahoo Finance ストリーミングのPricingDataメッセージ(protobuf)から
+ * 必要な2フィールドだけを取り出す最小限のデコーダ。
+ * field 1 = id (string, symbol), field 2 = price (float32)
+ * それ以外のフィールドはワイヤタイプに従って読み飛ばす。
+ */
+function decodeYatickerMinimal(bytes) {
+  let pos = 0;
+  const out = {};
+  const len = bytes.length;
+  while (pos < len) {
+    const [tag, p1] = readVarint(bytes, pos);
+    pos = p1;
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 0x7;
+
+    if (wireType === 0) {
+      const [, p2] = readVarint(bytes, pos);
+      pos = p2;
+    } else if (wireType === 1) {
+      pos += 8;
+    } else if (wireType === 2) {
+      const [strLen, p2] = readVarint(bytes, pos);
+      pos = p2;
+      if (fieldNum === 1) {
+        out.id = new TextDecoder().decode(bytes.slice(pos, pos + strLen));
+      }
+      pos += strLen;
+    } else if (wireType === 5) {
+      if (fieldNum === 2 && pos + 4 <= len) {
+        const view = new DataView(bytes.buffer, bytes.byteOffset + pos, 4);
+        out.price = view.getFloat32(0, true);
+      }
+      pos += 4;
+    } else {
+      break; // 未知のワイヤタイプ。以降のパースを打ち切る（表示専用のため安全側に倒す）
+    }
+  }
+  return out;
+}
+
+function readVarint(bytes, pos) {
+  let result = 0;
+  let shift = 0;
+  let b;
+  do {
+    b = bytes[pos++];
+    result |= (b & 0x7f) << shift;
+    shift += 7;
+  } while (b & 0x80 && shift < 35);
+  return [result >>> 0, pos];
+}
 
 render();
