@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>デモトレード</title>
+  <!-- ライブ株価表示(WSS)は表示専用の非公式機能。connect-srcで明示的に許可する -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' wss://streamer.finance.yahoo.com https://challenges.cloudflare.com; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; frame-src https://challenges.cloudflare.com;" />
   <link rel="stylesheet" href="/styles.css" />
   <!-- Turnstile: サイトキーはapp.js側で __TURNSTILE_SITE_KEY__ をCloudflareダッシュボードで発行した値に置き換える -->
   <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
