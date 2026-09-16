@@ -5,6 +5,7 @@ import orderRoutes from './routes/orders';
 import portfolioRoutes from './routes/portfolio';
 import fxRoutes from './routes/fx';
 import adminRoutes from './routes/admin';
+import symbolsRoutes from './routes/symbols';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -19,6 +20,7 @@ app.use('/api/*', async (c, next) => {
 app.route('/api', authRoutes);
 app.route('/api', orderRoutes);
 app.route('/api', portfolioRoutes);
+app.route('/api', symbolsRoutes);
 app.route('/api/fx', fxRoutes);
 app.route('/api/admin', adminRoutes);
 
