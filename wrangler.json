@@ -15,6 +15,12 @@
       "migrations_dir": "migrations"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT_KV",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    }
+  ],
   "vars": {
     "USE_WORKER_PROXY": "true",
     "SESSION_COOKIE_NAME": "session",
