@@ -9,6 +9,7 @@ import {
   generateSessionToken,
   hashSessionToken,
 } from '../services/crypto';
+import { generateCsrfToken } from '../middleware/csrf';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -131,7 +132,14 @@ app.post('/login', async (c) => {
     'Set-Cookie',
     `${cookieName}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${ttlDays * 86400}`,
   );
-  return c.json({ ok: true });
+  // CSRFトークンはJS側で読み取ってヘッダーに載せる必要があるためHttpOnlyにしない（ダブルサブミットクッキー方式）
+  const csrfToken = generateCsrfToken();
+  c.header(
+    'Set-Cookie',
+    `csrf_token=${csrfToken}; Secure; SameSite=Lax; Path=/; Max-Age=${ttlDays * 86400}`,
+    { append: true },
+  );
+  return c.json({ ok: true, csrf_token: csrfToken });
 });
 
 /** POST /api/logout — 仕様書4.1 */
@@ -144,6 +152,7 @@ app.post('/logout', requireCsrf, requireAuth, async (c) => {
     await c.env.DB.prepare(`DELETE FROM sessions WHERE id_hash = ?`).bind(idHash).run();
   }
   c.header('Set-Cookie', `${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
+  c.header('Set-Cookie', `csrf_token=; Secure; SameSite=Lax; Path=/; Max-Age=0`, { append: true });
   return c.json({ ok: true });
 });
 
