@@ -79,8 +79,21 @@ function render() {
   app.innerHTML = `
     <header class="app-header">
       <h1>デモトレード</h1>
-      <div class="header-balance" id="header-balance">読み込み中...</div>
     </header>
+    <div class="market-ticker">
+      <div class="ticker-item">
+        <span class="ticker-label">USD/JPY</span>
+        <span class="ticker-value" data-live-symbol="JPY=X" data-live-format="rate">--</span>
+      </div>
+      <div class="ticker-item">
+        <span class="ticker-label">日経平均</span>
+        <span class="ticker-value" data-live-symbol="^N225" data-live-format="index">--</span>
+      </div>
+      <div class="ticker-item">
+        <span class="ticker-label">NYダウ</span>
+        <span class="ticker-value" data-live-symbol="^DJI" data-live-format="index">--</span>
+      </div>
+    </div>
     <main id="main"></main>
     <nav class="tab-bar">
       ${tabButton('home', '🏠', 'ホーム')}
@@ -97,7 +110,31 @@ function render() {
     });
   });
   renderMain();
-  refreshHeaderBalance();
+  initMarketTicker();
+}
+
+// ティッカーバー: 初回はHTTPスナップショットで即表示、以降はライブフィードが上書きする
+async function initMarketTicker() {
+  connectLiveFeed();
+  subscribeLive(['JPY=X', '^N225', '^DJI']);
+  // 既にライブ値を持っていれば即反映（タブ切替での再描画時など）
+  ['JPY=X', '^N225', '^DJI'].forEach((s) => applyLivePriceToDom(s));
+
+  try {
+    const snap = await api('/market-summary');
+    if (snap.usdjpy != null && live.prices['JPY=X'] == null) {
+      live.prices['JPY=X'] = snap.usdjpy;
+      applyLivePriceToDom('JPY=X');
+    }
+    if (snap.nikkei != null && live.prices['^N225'] == null) {
+      live.prices['^N225'] = snap.nikkei;
+      applyLivePriceToDom('^N225');
+    }
+    if (snap.dow != null && live.prices['^DJI'] == null) {
+      live.prices['^DJI'] = snap.dow;
+      applyLivePriceToDom('^DJI');
+    }
+  } catch { /* noop: ライブフィードだけに頼る */ }
 }
 
 function tabButton(tab, icon, label) {
@@ -107,18 +144,9 @@ function tabButton(tab, icon, label) {
   </button>`;
 }
 
-async function refreshHeaderBalance() {
-  try {
-    const me = await api('/portfolio');
-    const el = document.getElementById('header-balance');
-    if (el) el.innerHTML = `保有 <strong>${(me.trades || []).length}</strong> 銘柄`;
-  } catch { /* noop */ }
-}
-
 async function renderMain() {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="empty-hint">読み込み中...</div>`;
-  if (state.tab !== 'home') disconnectLiveFeed();
   if (state.tab === 'home') return renderHome(main);
   if (state.tab === 'order') return renderOrder(main);
   if (state.tab === 'history') return renderHistory(main);
@@ -607,27 +635,36 @@ function setLiveDots(status) {
 
 function applyLivePriceToDom(symbol, prevPrice) {
   const price = live.prices[symbol];
-  const priceEl = document.querySelector(`[data-live-symbol="${cssEscape(symbol)}"]`);
-  const valueEl = document.querySelector(`[data-live-value="${cssEscape(symbol)}"]`);
+  if (typeof price !== 'number') return;
+
   const dotEl = document.querySelector(`[data-live-dot="${cssEscape(symbol)}"]`);
   if (dotEl) { dotEl.style.color = 'var(--primary)'; dotEl.title = 'ライブ接続中'; }
-  if (!priceEl) return;
 
-  if (typeof price === 'number') {
-    const market = valueEl ? valueEl.dataset.market : null;
-    priceEl.textContent = (market === 'US' ? '$' : '¥') + price.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  // 同じsymbolの表示要素が複数ある場合（同一銘柄を複数ロット保有、ティッカーバー等）に
+  // 全て更新できるようquerySelectorAllを使う
+  document.querySelectorAll(`[data-live-symbol="${cssEscape(symbol)}"]`).forEach((priceEl) => {
+    const format = priceEl.dataset.liveFormat;
+    if (format === 'rate' || format === 'index') {
+      priceEl.textContent = price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    } else {
+      // ポートフォリオ行の1株あたり価格表示（¥/$記号付き）
+      const valueEl = document.querySelector(`[data-live-value="${cssEscape(symbol)}"]`);
+      const market = valueEl ? valueEl.dataset.market : null;
+      priceEl.textContent = (market === 'US' ? '$' : '¥') + price.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
     if (prevPrice != null && price !== prevPrice) {
       priceEl.classList.remove('flash-up', 'flash-down');
-      // reflow強制してアニメーションを再トリガー
-      void priceEl.offsetWidth;
+      void priceEl.offsetWidth; // reflow強制してアニメーションを再トリガー
       priceEl.classList.add(price > prevPrice ? 'flash-up' : 'flash-down');
     }
-  }
-  if (valueEl && typeof price === 'number') {
+  });
+
+  // ポートフォリオ行の評価額（1株価格×数量）側も同様に全件更新
+  document.querySelectorAll(`[data-live-value="${cssEscape(symbol)}"]`).forEach((valueEl) => {
     const qty = Number(valueEl.dataset.quantity || '0');
     const market = valueEl.dataset.market;
     valueEl.textContent = market === 'US' ? usdFromPrice(price, qty) : yenFromPrice(price, qty);
-  }
+  });
 }
 
 function cssEscape(s) {
