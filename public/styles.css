@@ -55,6 +55,27 @@ html, body {
 }
 .header-balance strong { color: var(--text); font-size: 13px; }
 
+/* ---------- Market ticker bar ---------- */
+.market-ticker {
+  position: sticky;
+  top: 49px; /* app-headerの高さ分下にスティッキー表示 */
+  z-index: 9;
+  display: flex;
+  gap: 0;
+  background: #fbfbfb;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 4px;
+}
+.ticker-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.ticker-label { font-size: 10px; color: var(--text-sub); }
+.ticker-value { font-size: 13px; font-weight: 700; color: var(--text); }
+
 /* ---------- Bottom tab bar (LINE/Instagram style) ---------- */
 .tab-bar {
   position: fixed;
