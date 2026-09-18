@@ -81,6 +81,7 @@ app.get('/api/live-prices', requireAuth, async (c) => {
 
   let upstream: WebSocket | undefined;
   try {
+    const clientUserAgent = c.req.header('User-Agent') ?? 'Mozilla/5.0';
     const upstreamResp = await fetch('https://streamer.finance.yahoo.com/?version=2', {
       headers: {
         Upgrade: 'websocket',
@@ -88,7 +89,8 @@ app.get('/api/live-prices', requireAuth, async (c) => {
         // 明示的に指定できる。本家のブラウザクライアントと同じOriginを送ることで、
         // Origin検証がある場合でも弾かれにくくする（保険。無くても動く可能性は高い）。
         Origin: 'https://finance.yahoo.com',
-        'User-Agent': 'Mozilla/5.0',
+        // User-Agentは固定値ではなく、実際に接続してきたクライアントのものをそのままパススルーする
+        'User-Agent': clientUserAgent,
       },
     });
     upstream = upstreamResp.webSocket ?? undefined;
