@@ -1,13 +1,13 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
-import { requireAuth, requireAdmin } from '../middleware/auth';
-import { requireCsrf } from '../middleware/csrf';
+import { requireAdminSession, requireAdminCsrf } from '../middleware/adminAuth';
+
 import { generateSalt, hashPassword } from '../services/crypto';
 import { sendPasswordChangedEmail } from '../services/email';
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.use('*', requireAuth, requireAdmin);
+app.use('*', requireAdminSession);
 
 /**
  * 監査ログ用のD1PreparedStatementを組み立てる（実行はしない）。
@@ -47,8 +47,8 @@ app.get('/users', async (c) => {
 });
 
 /** PATCH /api/admin/users/:id/status — 凍結/解除/抹消。同一トランザクションで監査ログも記録 */
-app.patch('/users/:id/status', requireCsrf, async (c) => {
-  const auth = c.get('auth');
+app.patch('/users/:id/status', requireAdminCsrf, async (c) => {
+  const adminAuth = c.get('adminAuth');
   const targetId = c.req.param('id');
   const body = await c.req.json<{ status: 'ACTIVE' | 'FROZEN' | 'DELETED' }>();
 
@@ -60,7 +60,7 @@ app.patch('/users/:id/status', requireCsrf, async (c) => {
   const stmts = [
     c.env.DB.prepare(`UPDATE users SET status = ?, updated_at = ? WHERE id = ?`)
       .bind(body.status, Math.floor(Date.now() / 1000), targetId),
-    buildAuditLogStatement(c.env.DB, auth.userId, targetId, 'STATUS_CHANGE', before, { status: body.status }),
+    buildAuditLogStatement(c.env.DB, adminAuth.userId, targetId, 'STATUS_CHANGE', before, { status: body.status }),
   ];
   if (body.status === 'FROZEN' || body.status === 'DELETED') {
     stmts.push(c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(targetId));
@@ -71,8 +71,8 @@ app.patch('/users/:id/status', requireCsrf, async (c) => {
 });
 
 /** PATCH /api/admin/users/:id/balance — デモ残高の直接調整 */
-app.patch('/users/:id/balance', requireCsrf, async (c) => {
-  const auth = c.get('auth');
+app.patch('/users/:id/balance', requireAdminCsrf, async (c) => {
+  const adminAuth = c.get('adminAuth');
   const targetId = c.req.param('id');
   const body = await c.req.json<{ cash_balance_jpy_c?: number; cash_balance_usd_c?: number }>();
 
@@ -91,7 +91,7 @@ app.patch('/users/:id/balance', requireCsrf, async (c) => {
          updated_at = ?
        WHERE id = ?`,
     ).bind(body.cash_balance_jpy_c ?? null, body.cash_balance_usd_c ?? null, Math.floor(Date.now() / 1000), targetId),
-    buildAuditLogStatement(c.env.DB, auth.userId, targetId, 'BALANCE_ADJUST', before, body),
+    buildAuditLogStatement(c.env.DB, adminAuth.userId, targetId, 'BALANCE_ADJUST', before, body),
   ]);
 
   return c.json({ ok: true });
@@ -131,8 +131,8 @@ app.get('/users/:id/fx-transactions', async (c) => {
  * メール送信はDB更新の確定後に行い、送信失敗でもパスワード変更自体は成功として扱う
  * （メール送信はEmail Routing側のネットワーク呼び出しでありD1トランザクションに含められないため）。
  */
-app.patch('/users/:id/password', requireCsrf, async (c) => {
-  const auth = c.get('auth');
+app.patch('/users/:id/password', requireAdminCsrf, async (c) => {
+  const adminAuth = c.get('adminAuth');
   const targetId = c.req.param('id');
   const body = await c.req.json<{ newPassword: string }>();
   if (!body.newPassword || body.newPassword.length < 4) {
@@ -150,7 +150,7 @@ app.patch('/users/:id/password', requireCsrf, async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, updated_at = ? WHERE id = ?`)
       .bind(newSalt, newHash, Math.floor(Date.now() / 1000), targetId),
-    buildAuditLogStatement(c.env.DB, auth.userId, targetId, 'PASSWORD_CHANGE', {}, {}),
+    buildAuditLogStatement(c.env.DB, adminAuth.userId, targetId, 'PASSWORD_CHANGE', {}, {}),
   ]);
 
   let emailSent = false;
@@ -180,8 +180,8 @@ interface SymbolUpsertBody {
 }
 
 /** POST /api/admin/symbols — 銘柄の新規追加（既存の場合はUPSERT） */
-app.post('/symbols', requireCsrf, async (c) => {
-  const auth = c.get('auth');
+app.post('/symbols', requireAdminCsrf, async (c) => {
+  const adminAuth = c.get('adminAuth');
   const body = await c.req.json<SymbolUpsertBody>();
   if (!body.code || !body.market || !body.symbol || !body.name || !body.currency) {
     return c.json({ error: 'missing required fields' }, 400);
@@ -203,15 +203,15 @@ app.post('/symbols', requireCsrf, async (c) => {
          unit_size = excluded.unit_size, active = excluded.active`,
     ).bind(body.code, body.market, body.symbol, body.name, body.currency, body.unit_size, body.active ? 1 : 0),
     // symbolsはuser_idを持たないため、admin_audit_log.target_user_idは操作した管理者自身のIDを暫定的に使う
-    buildAuditLogStatement(c.env.DB, auth.userId, auth.userId, 'SYMBOL_UPDATE', before, body),
+    buildAuditLogStatement(c.env.DB, adminAuth.userId, adminAuth.userId, 'SYMBOL_UPDATE', before, body),
   ]);
 
   return c.json({ ok: true }, 201);
 });
 
 /** PATCH /api/admin/symbols/:market/:code — 銘柄情報の更新・無効化 */
-app.patch('/symbols/:market/:code', requireCsrf, async (c) => {
-  const auth = c.get('auth');
+app.patch('/symbols/:market/:code', requireAdminCsrf, async (c) => {
+  const adminAuth = c.get('adminAuth');
   const market = c.req.param('market');
   const code = c.req.param('code');
   const body = await c.req.json<Partial<SymbolUpsertBody>>();
@@ -239,7 +239,7 @@ app.patch('/symbols/:market/:code', requireCsrf, async (c) => {
       code,
       market,
     ),
-    buildAuditLogStatement(c.env.DB, auth.userId, auth.userId, 'SYMBOL_UPDATE', before, body),
+    buildAuditLogStatement(c.env.DB, adminAuth.userId, adminAuth.userId, 'SYMBOL_UPDATE', before, body),
   ]);
 
   return c.json({ ok: true });
