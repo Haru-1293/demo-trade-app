@@ -21,6 +21,11 @@
       "id": "REPLACE_WITH_KV_NAMESPACE_ID"
     }
   ],
+  "send_email": [
+    {
+      "name": "SEND_EMAIL"
+    }
+  ],
   "vars": {
     "USE_WORKER_PROXY": "true",
     "SESSION_COOKIE_NAME": "session",
