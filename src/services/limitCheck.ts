@@ -1,6 +1,6 @@
 import type { Env, OrderRow } from '../types';
 import { getOhlcHistory, getUsdJpyRate } from './marketData';
-import { currencyOf, buildSellStatements, type HoldLot } from './balance';
+import { currencyOf, settlementCurrencyOf, buildSellStatements, type HoldLot } from './balance';
 
 /**
  * 仕様書 4.4: ユーザーのアクセス（ログイン/portfolio/orders取得）をトリガーに、
@@ -137,7 +137,8 @@ async function expireOrder(db: D1Database, order: OrderRow): Promise<void> {
   const stmts = [db.prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?`).bind(order.id)];
 
   if (order.order_type === 'BUY_LIMIT' && order.locked_amount_c > 0) {
-    const currency = currencyOf(order.market);
+    // 円貨決済(settlement_currency='JPY')ならJPYで返却、それ以外は銘柄本来通貨で返却（仕様書4.9）
+    const currency = settlementCurrencyOf(order.market, order.settlement_currency);
     const column = currency === 'JPY' ? 'cash_balance_jpy_c' : 'cash_balance_usd_c';
     stmts.push(
       db.prepare(`UPDATE users SET ${column} = ${column} + ? WHERE id = ?`).bind(order.locked_amount_c, order.user_id),
