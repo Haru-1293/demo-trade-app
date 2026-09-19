@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { requireAuth } from '../middleware/auth';
-import { getCurrentPrice } from '../services/marketData';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -24,24 +23,8 @@ app.get('/symbols', requireAuth, async (c) => {
   return c.json({ symbols: results });
 });
 
-/**
- * GET /api/market-summary — ヘッダーのティッカーバー用スナップショット
- * USD/JPY・日経平均(^N225)・NYダウ(^DJI)の現在値。
- * WS(/api/live-prices)接続が確立するまでの初期表示用で、こちらは既存の
- * 60秒キャッシュ付きHTTP取得(marketData.getCurrentPrice)を流用する。
- * 約定判定には使わない表示専用データ。
- */
-app.get('/market-summary', requireAuth, async (c) => {
-  const [usdjpy, nikkei, dow] = await Promise.all([
-    getCurrentPrice(c.env, 'JPY=X'),
-    getCurrentPrice(c.env, '^N225'),
-    getCurrentPrice(c.env, '^DJI'),
-  ]);
-  return c.json({
-    usdjpy: usdjpy?.price ?? null,
-    nikkei: nikkei?.price ?? null,
-    dow: dow?.price ?? null,
-  });
-});
+// 表示専用の現在値取得はWSS(/api/live-prices)に統一したため、
+// HTTPスナップショット用のmarket-summaryエンドポイントは廃止した。
+// 成行・指値の約定判定用のHTTP取得(services/marketData.ts)は引き続きこのファイルとは別に存在する。
 
 export default app;
