@@ -95,6 +95,7 @@ export interface OrderRow {
   quantity: number;
   locked_amount_c: number;
   locked_lots: string | null; // SELL_LIMIT用: JSON文字列 [{trade_id, qty}]
+  settlement_currency: 'NATIVE' | 'JPY'; // 米国株買いの円貨決済フラグ（4.9参照）
   ordered_at: number;
   expires_at: number | null;
   checked_until: number | null;
