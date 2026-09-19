@@ -11,6 +11,19 @@ export function currencyOf(market: Market): Currency {
 }
 
 /**
+ * 決済通貨を決定する。円貨決済(settlement_currency='JPY')の米国株買いのみ
+ * 銘柄本来の通貨(USD)ではなくJPYで拘束・決済する（仕様書4.9）。
+ * それ以外は currencyOf(market) と同じ（従来通り）。
+ */
+export function settlementCurrencyOf(
+  market: Market,
+  settlementCurrency?: 'NATIVE' | 'JPY',
+): Currency {
+  if (settlementCurrency === 'JPY') return 'JPY';
+  return currencyOf(market);
+}
+
+/**
  * 現金残高から必要額を1SQL文で検証・仮確保する。
  * 影響行数が0であれば「残高不足」として呼び出し元は却下する。
  *
@@ -51,7 +64,13 @@ export async function creditCash(
 
 /**
  * 通貨単位（0.01円/0.01USD）未満を切り捨てて銭/セント単位のINTEGERへ変換する。
- * price: 市場価格(REAL), quantity: 数量, rate: 為替レート(JPY以外は1)
+ * price: 市場価格(REAL、銘柄本来の通貨建て), quantity: 数量
+ * rate: 通貨換算レート。
+ *   - 決済通貨が銘柄本来の通貨と同じ場合（外貨決済・日本株）は常に rate=1 を渡すこと。
+ *     rateに為替レートを渡すと「別通貨に換算した額」になってしまい、
+ *     銘柄本来通貨の残高（USD残高など）への入出金額としては誤りになる。
+ *   - 為替レートを渡すのは、円貨決済（4.9）や profit_jpy_c の円換算計算など、
+ *     明示的に「別通貨に換算した金額」が必要な場合のみ。
  */
 export function toAmountC(price: number, quantity: number, rate: number): number {
   const yenOrUsd = price * quantity * rate;
@@ -179,6 +198,10 @@ export interface HoldLot {
  * ロットのquantityと消費数が一致すれば当該行をSOLDへ更新、
  * 一致しなければ「残数量を引いたHOLD行」+「消費分の新規SOLD行」に分割する。
  * 部分約定ではなく、あくまで1回の売却注文の全量分をロット単位で内部処理する。
+ *
+ * 重要: 口座に実際にクレジットする金額(proceedsC)は必ず銘柄本来通貨での実額（rate=1）。
+ * 為替レート(sellRate/buy_rate)は profit_jpy_c（円換算損益、レポーティング用）の
+ * 算出にのみ用いる。両者を混同すると残高が為替レート倍/分の1になる誤りが生じる。
  */
 export function buildSellStatements(
   db: D1Database,
@@ -190,7 +213,7 @@ export function buildSellStatements(
 ): { stmts: D1PreparedStatement[]; totalProfitC: number; proceedsC: number } {
   const stmts: D1PreparedStatement[] = [];
   let totalProfitC = 0;
-  let proceedsC = 0;
+  let proceedsC = 0; // 銘柄本来通貨での実額（口座へクレジットする額）
 
   const lotById = new Map(lots.map((l) => [l.id, l]));
 
@@ -198,11 +221,12 @@ export function buildSellStatements(
     const lot = lotById.get(tradeId);
     if (!lot) continue;
 
-    const soldProceedsC = toAmountC(sellPrice, qty, sellRate);
-    const boughtCostC = toAmountC(lot.buy_price, qty, lot.buy_rate);
-    const profitC = soldProceedsC - boughtCostC;
+    const nativeProceedsC = toAmountC(sellPrice, qty, 1); // 実際に口座へ入る額（外貨のまま）
+    const jpyProceedsC = toAmountC(sellPrice, qty, sellRate); // 円換算（損益計算用）
+    const jpyCostC = toAmountC(lot.buy_price, qty, lot.buy_rate); // 円換算（損益計算用）
+    const profitC = jpyProceedsC - jpyCostC;
     totalProfitC += profitC;
-    proceedsC += soldProceedsC;
+    proceedsC += nativeProceedsC;
 
     if (qty === lot.quantity) {
       // 全量売却: この行をそのままSOLDへ
