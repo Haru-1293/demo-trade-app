@@ -1,0 +1,124 @@
+/* 管理画面はモバイルのボトムタブUIではなく、PC/タブレットでも使いやすい
+   一般的な管理画面レイアウト（上部タブ＋テーブル）にする。 */
+
+#admin-app {
+  max-width: 960px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.admin-header h1 { font-size: 18px; margin: 0; }
+
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-tabs button {
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-sub);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.admin-tabs button.active { color: var(--text); border-bottom-color: var(--primary); }
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-size: 13px;
+}
+.admin-table th, .admin-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.admin-table th {
+  background: #fafafa;
+  font-weight: 700;
+  color: var(--text-sub);
+  font-size: 11px;
+}
+.admin-table tr:last-child td { border-bottom: none; }
+.admin-table .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.admin-table .actions button {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: white;
+  font-size: 11px;
+  cursor: pointer;
+}
+.admin-table .actions button.danger { color: var(--danger); border-color: var(--danger); }
+.admin-table .actions button.primary { color: var(--primary-dark); border-color: var(--primary); }
+
+.admin-panel { overflow-x: auto; }
+
+.admin-form-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  align-items: flex-end;
+}
+.admin-form-row .field { display: flex; flex-direction: column; gap: 4px; }
+.admin-form-row label { font-size: 11px; color: var(--text-sub); font-weight: 600; }
+.admin-form-row input, .admin-form-row select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+.admin-form-row button {
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: none;
+  background: var(--primary);
+  color: white;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.status-pill.ACTIVE { background: #e6f9ee; color: var(--primary-dark); }
+.status-pill.FROZEN { background: #fff4d6; color: #a67c00; }
+.status-pill.DELETED { background: #f1f1f1; color: var(--text-sub); }
+
+.admin-denied {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-sub);
+}
+
+/* 履歴閲覧のモーダル的な簡易パネル */
+.history-panel {
+  margin-top: 12px;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: var(--radius);
+  font-size: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
