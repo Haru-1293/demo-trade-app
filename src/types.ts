@@ -31,6 +31,13 @@ export interface Env {
   // secrets（`wrangler secret put` で設定。wrangler.jsonには書かない）
   TURNSTILE_SECRET_KEY: string;
   CSRF_SECRET: string;
+
+  // 管理画面（独立セッション + WebAuthn）
+  ADMIN_SESSION_COOKIE_NAME: string;
+  ADMIN_SESSION_TTL_DAYS: string;
+  WEBAUTHN_RP_NAME: string;
+  WEBAUTHN_RP_ID: string;
+  WEBAUTHN_ORIGIN: string;
 }
 
 export interface UserRow {
@@ -112,6 +119,29 @@ export interface AuthContext {
   userId: string;
   role: UserRole;
   status: UserStatus;
+}
+
+/** 管理画面専用セッションのコンテキスト（通常アプリのAuthContextとは別物） */
+export interface AdminAuthContext {
+  userId: string;
+}
+
+export interface AdminSessionRow {
+  id_hash: string;
+  user_id: string;
+  expires_at: number;
+  created_at: number;
+}
+
+export interface WebauthnCredentialRow {
+  id: string;
+  user_id: string;
+  credential_id: string;
+  public_key: string;
+  counter: number;
+  transports: string | null;
+  label: string | null;
+  created_at: number;
 }
 
 /**
