@@ -35,7 +35,12 @@
     "ORDER_EXPIRY_MAX_DAYS": "14",
     "MARKET_DATA_CACHE_SECONDS": "60",
     "SLIPPAGE_SAFETY_FACTOR": "1.05",
-    "FX_EXCHANGE_RATE_LIMIT_PER_MIN": "5"
+    "FX_EXCHANGE_RATE_LIMIT_PER_MIN": "5",
+    "ADMIN_SESSION_COOKIE_NAME": "admin_session",
+    "ADMIN_SESSION_TTL_DAYS": "1",
+    "WEBAUTHN_RP_NAME": "デモトレード管理画面",
+    "WEBAUTHN_RP_ID": "REPLACE_WITH_YOUR_DOMAIN",
+    "WEBAUTHN_ORIGIN": "REPLACE_WITH_https://your-domain"
   },
   "observability": {
     "enabled": true
