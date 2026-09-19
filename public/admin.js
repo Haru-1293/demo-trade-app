@@ -1,21 +1,24 @@
-// デモトレード 管理画面（素のJS）。ログイン中のセッション(session Cookie)をそのまま利用する。
-// role='ADMIN'かつstatus='ACTIVE'でなければAPI側で403になるので、その場合は権限なし表示にする。
+// デモトレード 管理画面。通常アプリとは完全に独立したセッション(admin_session / admin_csrf_token)を使う。
 
-const state = { tab: 'users', users: [], symbols: [], openHistoryFor: null, historyData: null };
+const state = { tab: 'users', users: [], symbols: [] };
+const loginState = { mode: 'password', email: '' }; // 'password' | 'passkey'
 
 function getCookie(name) {
   const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
   return m ? decodeURIComponent(m[1]) : null;
 }
-function csrfHeaders() {
-  const token = getCookie('csrf_token');
-  return token ? { 'X-CSRF-Token': token } : {};
+function isAdminLoggedIn() {
+  return !!getCookie('admin_csrf_token');
+}
+function adminCsrfHeaders() {
+  const token = getCookie('admin_csrf_token');
+  return token ? { 'X-Admin-CSRF-Token': token } : {};
 }
 
 async function api(path, options = {}) {
   const res = await fetch(`/api${path}`, {
     method: options.method || 'GET',
-    headers: { 'Content-Type': 'application/json', ...csrfHeaders(), ...(options.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...adminCsrfHeaders(), ...(options.headers || {}) },
     credentials: 'same-origin',
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
@@ -37,33 +40,188 @@ function toast(msg) {
   setTimeout(() => el.remove(), 2500);
 }
 
+// ---------- base64url <-> ArrayBuffer（WebAuthnのバイナリデータ用） ----------
+function base64urlToBuffer(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(b64url.length / 4) * 4, '=');
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+function bufferToBase64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 const root = document.getElementById('admin-app');
 
 async function init() {
-  if (!getCookie('csrf_token')) {
-    root.innerHTML = `<div class="admin-denied">ログインしていません。<a href="/">トップページ</a>からログインしてください。</div>`;
+  if (!isAdminLoggedIn()) {
+    renderLogin();
     return;
   }
   try {
     await api('/admin/users'); // 権限チェックを兼ねる
   } catch (e) {
+    if (e.status === 401) { renderLogin(); return; }
     if (e.status === 403) {
       root.innerHTML = `<div class="admin-denied">管理者権限がありません。</div>`;
-    } else if (e.status === 401) {
-      root.innerHTML = `<div class="admin-denied">ログインしていません。<a href="/">トップページ</a>からログインしてください。</div>`;
-    } else {
-      root.innerHTML = `<div class="admin-denied">読み込みに失敗しました: ${e.message}</div>`;
+      return;
     }
+    root.innerHTML = `<div class="admin-denied">読み込みに失敗しました: ${e.message}</div>`;
     return;
   }
   render();
 }
 
+// ---------- ログイン画面 ----------
+function renderLogin() {
+  root.innerHTML = `
+    <div class="auth-screen">
+      <div class="auth-logo">
+        <div class="emoji">🛠</div>
+        <h2>デモトレード管理画面</h2>
+      </div>
+
+      <div class="segmented" id="login-mode-seg">
+        <button data-v="password" class="${loginState.mode === 'password' ? 'active' : ''}">メール+パスワード</button>
+        <button data-v="passkey" class="${loginState.mode === 'passkey' ? 'active' : ''}">パスキー</button>
+      </div>
+
+      <div class="form-group">
+        <label>メールアドレス</label>
+        <input type="text" id="login-email" value="${loginState.email}">
+      </div>
+
+      ${loginState.mode === 'password' ? `
+        <div class="form-group">
+          <label>パスワード</label>
+          <input type="password" id="login-password">
+        </div>
+        <div class="form-group">
+          <div class="cf-turnstile" data-sitekey="__TURNSTILE_SITE_KEY__" data-callback="onAdminTurnstileToken"></div>
+        </div>
+        <button class="btn btn-primary" id="login-submit">ログイン</button>
+      ` : `
+        <p style="font-size:12px;color:var(--text-sub)">あらかじめパスキーを登録済みのメールアドレスを入力し、ブラウザ・端末の認証（顔認証/指紋/PINなど）でログインします。</p>
+        <button class="btn btn-primary" id="login-passkey-submit">パスキーでログイン</button>
+      `}
+    </div>
+  `;
+
+  document.querySelectorAll('#login-mode-seg button').forEach((b) =>
+    b.addEventListener('click', () => { loginState.mode = b.dataset.v; renderLogin(); }));
+  document.getElementById('login-email').addEventListener('input', (e) => { loginState.email = e.target.value.trim(); });
+
+  if (loginState.mode === 'password') {
+    document.getElementById('login-submit').addEventListener('click', submitPasswordLogin);
+  } else {
+    document.getElementById('login-passkey-submit').addEventListener('click', submitPasskeyLogin);
+  }
+}
+
+window.onAdminTurnstileToken = (token) => { window.__adminTurnstileToken = token; };
+
+async function submitPasswordLogin() {
+  const email = loginState.email;
+  const password = document.getElementById('login-password').value;
+  const turnstileToken = window.__adminTurnstileToken || '';
+  if (!email || !password) { toast('メールアドレスとパスワードを入力してください'); return; }
+  try {
+    await api('/admin-auth/login', { method: 'POST', body: { email, password, turnstileToken } });
+    toast('ログインしました');
+    init();
+  } catch (e) {
+    toast(`ログインに失敗しました: ${e.message}`);
+  }
+}
+
+async function submitPasskeyLogin() {
+  const email = loginState.email;
+  if (!email) { toast('メールアドレスを入力してください'); return; }
+  if (!window.PublicKeyCredential) { toast('このブラウザはパスキーに対応していません'); return; }
+
+  try {
+    const { options, userId } = await api('/admin-auth/webauthn/login-options', { method: 'POST', body: { email } });
+
+    const publicKey = {
+      ...options,
+      challenge: base64urlToBuffer(options.challenge),
+      allowCredentials: (options.allowCredentials || []).map((c) => ({ ...c, id: base64urlToBuffer(c.id) })),
+    };
+
+    const assertion = await navigator.credentials.get({ publicKey });
+
+    const credentialJson = {
+      id: assertion.id,
+      rawId: bufferToBase64url(assertion.rawId),
+      type: assertion.type,
+      response: {
+        clientDataJSON: bufferToBase64url(assertion.response.clientDataJSON),
+        authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+        signature: bufferToBase64url(assertion.response.signature),
+        userHandle: assertion.response.userHandle ? bufferToBase64url(assertion.response.userHandle) : undefined,
+      },
+      clientExtensionResults: assertion.getClientExtensionResults ? assertion.getClientExtensionResults() : {},
+    };
+
+    await api('/admin-auth/webauthn/login-verify', { method: 'POST', body: { userId, credential: credentialJson } });
+    toast('パスキーでログインしました');
+    init();
+  } catch (e) {
+    toast(`パスキーログインに失敗しました: ${e.message}`);
+  }
+}
+
+// ---------- パスキー登録（ログイン後の操作） ----------
+async function registerPasskey() {
+  if (!window.PublicKeyCredential) { toast('このブラウザはパスキーに対応していません'); return; }
+  try {
+    const options = await api('/admin-auth/webauthn/register-options', { method: 'POST' });
+
+    const publicKey = {
+      ...options,
+      challenge: base64urlToBuffer(options.challenge),
+      user: { ...options.user, id: base64urlToBuffer(options.user.id) },
+      excludeCredentials: (options.excludeCredentials || []).map((c) => ({ ...c, id: base64urlToBuffer(c.id) })),
+    };
+
+    const credential = await navigator.credentials.create({ publicKey });
+
+    const credentialJson = {
+      id: credential.id,
+      rawId: bufferToBase64url(credential.rawId),
+      type: credential.type,
+      response: {
+        clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+        attestationObject: bufferToBase64url(credential.response.attestationObject),
+        transports: credential.response.getTransports ? credential.response.getTransports() : undefined,
+      },
+      clientExtensionResults: credential.getClientExtensionResults ? credential.getClientExtensionResults() : {},
+    };
+
+    await api('/admin-auth/webauthn/register-verify', {
+      method: 'POST',
+      body: { credential: credentialJson, label: navigator.userAgent.slice(0, 60) },
+    });
+    toast('パスキーを登録しました');
+  } catch (e) {
+    toast(`パスキー登録に失敗しました: ${e.message}`);
+  }
+}
+
+// ---------- メイン画面 ----------
 function render() {
   root.innerHTML = `
     <div class="admin-header">
       <h1>🛠 デモトレード管理画面</h1>
-      <a href="/" class="btn-link">アプリへ戻る</a>
+      <div class="actions">
+        <button class="btn-link" id="register-passkey-btn">🔑 このブラウザにパスキーを登録</button>
+        <button class="btn-link" id="admin-logout-btn">ログアウト</button>
+        <a href="/" class="btn-link">アプリへ戻る</a>
+      </div>
     </div>
     <div class="admin-tabs">
       <button data-t="users" class="${state.tab === 'users' ? 'active' : ''}">ユーザー管理</button>
@@ -73,6 +231,11 @@ function render() {
   `;
   document.querySelectorAll('.admin-tabs button').forEach((b) =>
     b.addEventListener('click', () => { state.tab = b.dataset.t; render(); }));
+  document.getElementById('register-passkey-btn').addEventListener('click', registerPasskey);
+  document.getElementById('admin-logout-btn').addEventListener('click', async () => {
+    try { await api('/admin-auth/logout', { method: 'POST' }); } catch { /* noop */ }
+    init();
+  });
 
   if (state.tab === 'users') renderUsers();
   if (state.tab === 'symbols') renderSymbols();
