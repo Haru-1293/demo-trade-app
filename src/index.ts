@@ -6,6 +6,7 @@ import portfolioRoutes from './routes/portfolio';
 import fxRoutes from './routes/fx';
 import adminRoutes from './routes/admin';
 import symbolsRoutes from './routes/symbols';
+import adminAuthRoutes from './routes/adminAuth';
 import { requireAuth } from './middleware/auth';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -25,6 +26,7 @@ app.route('/api', portfolioRoutes);
 app.route('/api', symbolsRoutes);
 app.route('/api/fx', fxRoutes);
 app.route('/api/admin', adminRoutes);
+app.route('/api/admin-auth', adminAuthRoutes);
 
 // USE_WORKER_PROXY=true の間だけ有効な市場データプロキシ（仕様書5.）
 const ALLOWED_PROXY_HOSTS = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
