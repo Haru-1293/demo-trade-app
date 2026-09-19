@@ -15,6 +15,7 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   RATE_LIMIT_KV: KVNamespace;
+  SEND_EMAIL: SendEmailBinding;
 
   // vars（wrangler.json参照）
   USE_WORKER_PROXY: string;
@@ -35,6 +36,7 @@ export interface Env {
 export interface UserRow {
   id: string;
   username: string;
+  email: string | null; // パスワード変更通知(4.5)の宛先。任意項目
   password_salt: string;
   password_hash: string;
   role: UserRole;
@@ -110,4 +112,12 @@ export interface AuthContext {
   userId: string;
   role: UserRole;
   status: UserStatus;
+}
+
+/**
+ * Cloudflare Email Routing の send_email バインディング型。
+ * @cloudflare/workers-types のバージョンによっては型が未提供のため、最小限を自前で宣言する。
+ */
+export interface SendEmailBinding {
+  send(message: InstanceType<typeof import('cloudflare:email').EmailMessage>): Promise<void>;
 }
