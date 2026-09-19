@@ -113,28 +113,13 @@ function render() {
   initMarketTicker();
 }
 
-// ティッカーバー: 初回はHTTPスナップショットで即表示、以降はライブフィードが上書きする
-async function initMarketTicker() {
+// ティッカーバー: WSSのみに統一（HTTPスナップショットのフォールバックは廃止）。
+// ライブフィードから最初のtickが届くまでは「--」表示のまま。
+function initMarketTicker() {
   connectLiveFeed();
   subscribeLive(['JPY=X', '^N225', '^DJI']);
   // 既にライブ値を持っていれば即反映（タブ切替での再描画時など）
   ['JPY=X', '^N225', '^DJI'].forEach((s) => applyLivePriceToDom(s));
-
-  try {
-    const snap = await api('/market-summary');
-    if (snap.usdjpy != null && live.prices['JPY=X'] == null) {
-      live.prices['JPY=X'] = snap.usdjpy;
-      applyLivePriceToDom('JPY=X');
-    }
-    if (snap.nikkei != null && live.prices['^N225'] == null) {
-      live.prices['^N225'] = snap.nikkei;
-      applyLivePriceToDom('^N225');
-    }
-    if (snap.dow != null && live.prices['^DJI'] == null) {
-      live.prices['^DJI'] = snap.dow;
-      applyLivePriceToDom('^DJI');
-    }
-  } catch { /* noop: ライブフィードだけに頼る */ }
 }
 
 function tabButton(tab, icon, label) {
@@ -209,6 +194,7 @@ const orderState = {
   unitSize: 1,
   targetPrice: '',
   expiresDate: '',
+  settlementCurrency: 'NATIVE', // 'NATIVE' | 'JPY'（米国株の買いのみ有効、仕様書4.9）
 };
 
 async function renderOrder(main) {
@@ -235,10 +221,24 @@ async function renderOrder(main) {
         </datalist>
       </div>
 
+      <div class="form-group" id="order-price-preview" style="display:none">
+        <label>現在値（ライブ）</label>
+        <div class="ticker-value" id="order-price-preview-value" style="font-size:18px"></div>
+      </div>
+
       <div class="segmented buy-sell" id="side-seg">
         <button data-v="BUY" class="${orderState.side === 'BUY' ? 'active buy' : ''}">買い</button>
         <button data-v="SELL" class="${orderState.side === 'SELL' ? 'active sell' : ''}">売り</button>
       </div>
+
+      ${orderState.market === 'US' && orderState.side === 'BUY' ? `
+      <div class="form-group">
+        <label>決済通貨</label>
+        <div class="segmented" id="settle-seg">
+          <button data-v="NATIVE" class="${orderState.settlementCurrency === 'NATIVE' ? 'active' : ''}">外貨決済(USD)</button>
+          <button data-v="JPY" class="${orderState.settlementCurrency === 'JPY' ? 'active' : ''}">円貨決済(JPY)</button>
+        </div>
+      </div>` : ''}
 
       <div class="segmented" id="type-seg">
         <button data-v="MARKET" class="${orderState.orderType === 'MARKET' ? 'active' : ''}">成行</button>
@@ -275,11 +275,23 @@ async function renderOrder(main) {
   updateQtyHint();
 
   main.querySelectorAll('#market-seg button').forEach((b) =>
-    b.addEventListener('click', () => { orderState.market = b.dataset.v; orderState.code = ''; renderOrder(main); }));
+    b.addEventListener('click', () => {
+      orderState.market = b.dataset.v; orderState.code = ''; orderState.settlementCurrency = 'NATIVE';
+      renderOrder(main);
+    }));
   main.querySelectorAll('#side-seg button').forEach((b) =>
-    b.addEventListener('click', () => { orderState.side = b.dataset.v; renderOrder(main); }));
+    b.addEventListener('click', () => {
+      orderState.side = b.dataset.v;
+      if (orderState.side !== 'BUY') orderState.settlementCurrency = 'NATIVE';
+      renderOrder(main);
+    }));
   main.querySelectorAll('#type-seg button').forEach((b) =>
     b.addEventListener('click', () => { orderState.orderType = b.dataset.v; renderOrder(main); }));
+  const settleSeg = document.getElementById('settle-seg');
+  if (settleSeg) {
+    settleSeg.querySelectorAll('button').forEach((b) =>
+      b.addEventListener('click', () => { orderState.settlementCurrency = b.dataset.v; renderOrder(main); }));
+  }
 
   document.getElementById('order-code').addEventListener('input', (e) => {
     orderState.code = e.target.value.trim().toUpperCase();
@@ -317,6 +329,26 @@ function updateQtyHint() {
   if (!hint) return;
   const sym = findSymbol();
   hint.textContent = sym ? `単元: ${sym.unit_size}株 / 通貨: ${sym.currency}` : '銘柄コードを入力してください';
+  updateOrderPricePreview(sym);
+}
+
+// 選択中の銘柄の現在値をライブフィード(/api/live-prices)から表示する（表示専用、約定には使わない）
+function updateOrderPricePreview(sym) {
+  const box = document.getElementById('order-price-preview');
+  const valEl = document.getElementById('order-price-preview-value');
+  if (!box || !valEl) return;
+  if (!sym) {
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'block';
+  valEl.dataset.liveSymbol = sym.symbol;
+  valEl.dataset.liveFormat = 'quote';
+  valEl.dataset.currency = sym.currency;
+  valEl.textContent = live.prices[sym.symbol] != null ? '' : '読み込み中...';
+  connectLiveFeed();
+  subscribeLive([sym.symbol]);
+  applyLivePriceToDom(sym.symbol);
 }
 
 async function submitOrder() {
@@ -326,6 +358,8 @@ async function submitOrder() {
     side: orderState.side,
     quantity: orderState.quantity,
     idempotency_key: uuid(),
+    // 米国株の買いのみ意味を持つ。他は'NATIVE'を送っても無視される（バックエンド側で検証）
+    settlement_currency: orderState.settlementCurrency,
   };
   try {
     if (orderState.orderType === 'MARKET') {
@@ -646,6 +680,10 @@ function applyLivePriceToDom(symbol, prevPrice) {
     const format = priceEl.dataset.liveFormat;
     if (format === 'rate' || format === 'index') {
       priceEl.textContent = price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    } else if (format === 'quote') {
+      // 注文画面の現在値プレビュー（表示専用、約定には使わない）
+      const cur = priceEl.dataset.currency;
+      priceEl.textContent = (cur === 'USD' ? '$' : '¥') + price.toLocaleString(undefined, { maximumFractionDigits: 2 });
     } else {
       // ポートフォリオ行の1株あたり価格表示（¥/$記号付き）
       const valueEl = document.querySelector(`[data-live-value="${cssEscape(symbol)}"]`);
