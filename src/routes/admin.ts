@@ -4,6 +4,7 @@ import { requireAdminSession, requireAdminCsrf } from '../middleware/adminAuth';
 
 import { generateSalt, hashPassword } from '../services/crypto';
 import { sendPasswordChangedEmail } from '../services/email';
+import { syncSymbols } from '../services/symbolSync';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -159,6 +160,15 @@ app.patch('/users/:id/password', requireAdminCsrf, async (c) => {
   }
 
   return c.json({ ok: true, email_sent: emailSent, has_email: !!target.email });
+});
+
+/**
+ * POST /api/admin/symbols/sync — 銘柄マスタの手動同期（Cronを待たずに即時実行）。
+ * JPX(日本株)・SEC(米国株)いずれかの取得に失敗しても、成功した方は反映したうえでエラーを返す。
+ */
+app.post('/symbols/sync', requireAdminCsrf, async (c) => {
+  const result = await syncSymbols(c.env);
+  return c.json(result, result.errors.length > 0 ? 207 : 200);
 });
 
 /** GET /api/admin/symbols — 銘柄一覧（無効化済みも含め全件、管理画面用） */
