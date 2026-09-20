@@ -368,6 +368,10 @@ async function renderSymbols() {
   }
 
   panel.innerHTML = `
+    <div class="admin-form-row">
+      <button id="symbol-sync-btn" class="primary">🔄 JPX/SECから自動同期（毎日08:30 JSTにも自動実行）</button>
+      <span id="symbol-sync-status" style="font-size:12px;color:var(--text-sub)"></span>
+    </div>
     <div class="admin-form-row" id="symbol-add-form">
       <div class="field"><label>市場</label>
         <select id="new-market"><option value="JP">JP</option><option value="US">US</option></select>
@@ -400,12 +404,27 @@ async function renderSymbols() {
     </table>
   `;
 
+  document.getElementById('symbol-sync-btn').addEventListener('click', syncSymbolsNow);
   document.getElementById('symbol-add-btn').addEventListener('click', addSymbol);
   panel.querySelectorAll('[data-act="toggle"]').forEach((btn) => {
     const tr = btn.closest('tr');
     const sym = state.symbols.find((s) => s.code === tr.dataset.code && s.market === tr.dataset.market);
     btn.addEventListener('click', () => toggleSymbolActive(sym));
   });
+}
+
+async function syncSymbolsNow() {
+  const statusEl = document.getElementById('symbol-sync-status');
+  statusEl.textContent = '同期中...';
+  try {
+    const res = await api('/admin/symbols/sync', { method: 'POST' });
+    statusEl.textContent = `JP ${res.jpCount}件 / US ${res.usCount}件 反映${res.errors.length ? '（一部エラーあり: ' + res.errors.join(', ') + '）' : ''}`;
+    toast('銘柄マスタを同期しました');
+    renderSymbols();
+  } catch (e) {
+    statusEl.textContent = '';
+    toast(`同期に失敗しました: ${e.message}`);
+  }
 }
 
 async function addSymbol() {
