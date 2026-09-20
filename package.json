@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.3.3",
-    "hono": "^4.13.8"
+    "hono": "^4.13.8",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
