@@ -3,6 +3,10 @@
   "name": "demo-trade-app",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["30 23 * * *"]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
@@ -40,7 +44,11 @@
     "ADMIN_SESSION_TTL_DAYS": "1",
     "WEBAUTHN_RP_NAME": "デモトレード管理画面",
     "WEBAUTHN_RP_ID": "REPLACE_WITH_YOUR_DOMAIN",
-    "WEBAUTHN_ORIGIN": "REPLACE_WITH_https://your-domain"
+    "WEBAUTHN_ORIGIN": "REPLACE_WITH_https://your-domain",
+    "JPX_LISTED_XLSX_URL": "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx",
+    "SEC_TICKERS_URL": "https://www.sec.gov/files/company_tickers.json",
+    "SEC_USER_AGENT": "REPLACE_WITH_AppName contact@example.com",
+    "SYMBOL_CACHE_TTL_SECONDS": "43200"
   },
   "observability": {
     "enabled": true
