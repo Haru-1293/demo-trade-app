@@ -8,6 +8,7 @@ import adminRoutes from './routes/admin';
 import symbolsRoutes from './routes/symbols';
 import adminAuthRoutes from './routes/adminAuth';
 import { requireAuth } from './middleware/auth';
+import { syncSymbols } from './services/symbolSync';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -158,4 +159,22 @@ app.get('/api/live-prices', requireAuth, async (c) => {
 
 app.notFound((c) => c.json({ error: 'Not Found' }, 404));
 
-export default app;
+export default {
+  fetch: app.fetch,
+
+  /**
+   * Cronトリガー: 毎日08:30(JST) = 23:30(UTC)に銘柄マスタ(symbols)を同期する。
+   * wrangler.json の triggers.crons を参照。
+   */
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      syncSymbols(env).then((result) => {
+        if (result.errors.length > 0) {
+          console.error('symbol sync completed with errors', result);
+        } else {
+          console.log('symbol sync completed', result.jpCount, result.usCount);
+        }
+      }),
+    );
+  },
+};
