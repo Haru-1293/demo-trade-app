@@ -38,6 +38,12 @@ export interface Env {
   WEBAUTHN_RP_NAME: string;
   WEBAUTHN_RP_ID: string;
   WEBAUTHN_ORIGIN: string;
+
+  // 銘柄マスタの自動同期（JPX公開xlsx + SEC company_tickers.json）
+  JPX_LISTED_XLSX_URL: string;
+  SEC_TICKERS_URL: string;
+  SEC_USER_AGENT: string;
+  SYMBOL_CACHE_TTL_SECONDS: string;
 }
 
 export interface UserRow {
