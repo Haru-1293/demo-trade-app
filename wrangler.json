@@ -15,14 +15,14 @@
     {
       "binding": "DB",
       "database_name": "demo-trade-db",
-      "database_id": "0f2bbf77-e314-4aa0-b6a1-653622f5178e",
+      "database_id": "__D1_DATABASE_ID__",
       "migrations_dir": "migrations"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "RATE_LIMIT_KV",
-      "id": "5ffc32c27a08449baab07d55c49e3b34"
+      "id": "__KV_RATE_LIMIT_NAMESPACE_ID__"
     }
   ],
   "send_email": [
