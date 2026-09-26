@@ -28,11 +28,24 @@ npm run db:migrate:local
 | `TURNSTILE_SECRET_KEY` | ログイン・登録・管理画面ログイン時のBOT検証 |
 | `CSRF_SECRET` | 現状未使用（ダブルサブミットクッキー方式のためcookie値そのものを比較。署名検証へ強化する場合に使用） |
 
-### `wrangler.json` 内で置き換えが必要な値
+### `wrangler.json` 内の実ID（D1/KV）は自動注入方式
+
+`wrangler.json`の`database_id`と`RATE_LIMIT_KV`の`id`は、`__D1_DATABASE_ID__` / `__KV_RATE_LIMIT_NAMESPACE_ID__` というプレースホルダートークンのままリポジトリにコミットする（実IDは一切コミットしない）。実IDは以下の2通りの経路でのみ渡す:
+
+- **ローカル開発（`wrangler dev`）**: `wrangler d1 create` / `wrangler kv namespace create` の出力値で、手元の`wrangler.json`だけを一時的に書き換える（コミットしない）。
+- **Cloudflare Workers Buildsでの自動デプロイ**: プロジェクト設定の **「Build variables and secrets」** に以下の環境変数を登録する。`npm run deploy`実行時、`predeploy`スクリプト（`scripts/inject-config.mjs`）がこれらの値でプレースホルダーを置換してから`wrangler deploy`が走る。
+
+  | 環境変数名 | 対応するプレースホルダー |
+  |---|---|
+  | `D1_DATABASE_ID` | `__D1_DATABASE_ID__` |
+  | `KV_RATE_LIMIT_NAMESPACE_ID` | `__KV_RATE_LIMIT_NAMESPACE_ID__` |
+
+  併せて、プロジェクト設定の **「Deploy command」** を `npx wrangler deploy` から **`npm run deploy`** に変更しておくこと（npmの`predeploy`フックを効かせるため）。
+
+### `wrangler.json` 内でその他に置き換えが必要な値（機密ではないため直接編集でよい）
 
 | 変数 | 用途 |
 |---|---|
-| `database_id` / KVの`id` | `wrangler d1 create` / `wrangler kv namespace create` の出力値 |
 | `WEBAUTHN_RP_ID` | 実際のドメイン（例: `example.com`） |
 | `WEBAUTHN_ORIGIN` | 実際のオリジン（例: `https://example.com`） |
 | `SEC_USER_AGENT` | SECのフェアユースポリシーに従い、アプリ名+連絡先を明示（例: `demo-trade-app you@example.com`） |
