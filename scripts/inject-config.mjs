@@ -1,50 +1,68 @@
 // ビルド時（Cloudflare Workers Buildsの"Build variables and secrets"）に設定した
-// 環境変数で wrangler.json のプレースホルダートークンを実IDへ置き換える。
+// 環境変数で、各ファイル内のプレースホルダートークンを実際の値へ置き換える。
 //
-// これにより、リポジトリ自体（公開してもよい版）には実際のD1/KVのIDを一切コミットせず、
+// これにより、リポジトリ自体（公開してもよい版）には実際のID・キーを一切コミットせず、
 // 自動ビルド時にだけ実環境の値を注入できる。フォークやリポジトリ分割は不要。
+// GitHub上のファイル内容は常にプレースホルダーのままでよく、手動編集は不要。
 //
 // 必須の環境変数（Cloudflareダッシュボードの Build variables and secrets に設定）:
 //   D1_DATABASE_ID              — wrangler.json の "__D1_DATABASE_ID__" を置換
 //   KV_RATE_LIMIT_NAMESPACE_ID  — wrangler.json の "__KV_RATE_LIMIT_NAMESPACE_ID__" を置換
+//   TURNSTILE_SITE_KEY          — public/app.js と public/admin.js の
+//                                  "__TURNSTILE_SITE_KEY__" を置換（クライアント側の公開キーなので機密ではない）
+//
+// 注意: TURNSTILE_SECRET_KEY（サーバー側の秘密キー）はこのビルド変数とは別物。
+// そちらはWorker本体の実行時シークレット（Settings > Variables and Secrets、
+// または `wrangler secret put TURNSTILE_SECRET_KEY`）として登録すること。
+// このスクリプトが処理するのはビルド時にファイルへ焼き込む値のみで、
+// Workerのランタイムシークレット（env経由でアクセスする値）には関与しない。
 //
 // package.json の "predeploy" スクリプトとして実行される想定
 // （`npm run deploy` 実行時にnpmが自動で先に走らせる）。
-// ローカル開発（wrangler dev）では .dev.vars 等で別途値を用意し、このスクリプトは通さない。
+// ローカル開発（wrangler dev）では手元のファイルを一時的に書き換えるか、
+// 別途ローカル用の値を用意し、このスクリプトは通さない。
 
 import fs from 'node:fs';
-
-const WRANGLER_CONFIG_PATH = 'wrangler.json';
 
 const TOKEN_TO_ENV_VAR = {
   __D1_DATABASE_ID__: 'D1_DATABASE_ID',
   __KV_RATE_LIMIT_NAMESPACE_ID__: 'KV_RATE_LIMIT_NAMESPACE_ID',
+  __TURNSTILE_SITE_KEY__: 'TURNSTILE_SITE_KEY',
 };
 
-function main() {
-  let content = fs.readFileSync(WRANGLER_CONFIG_PATH, 'utf8');
-  const missing = [];
+const FILES_TO_PROCESS = ['wrangler.json', 'public/app.js', 'public/admin.js'];
 
-  for (const [token, envVarName] of Object.entries(TOKEN_TO_ENV_VAR)) {
-    const value = process.env[envVarName];
-    if (!content.includes(token)) continue; // 既に置換済み（ローカルで手動編集済み等）なら何もしない
-    if (!value) {
-      missing.push(envVarName);
-      continue;
+function main() {
+  const missing = new Set();
+
+  for (const filePath of FILES_TO_PROCESS) {
+    if (!fs.existsSync(filePath)) continue;
+    let content = fs.readFileSync(filePath, 'utf8');
+    let changed = false;
+
+    for (const [token, envVarName] of Object.entries(TOKEN_TO_ENV_VAR)) {
+      if (!content.includes(token)) continue; // このファイルには該当トークンがない
+      const value = process.env[envVarName];
+      if (!value) {
+        missing.add(`${envVarName}（${filePath} の "${token}"）`);
+        continue;
+      }
+      content = content.split(token).join(value);
+      changed = true;
     }
-    content = content.split(token).join(value);
+
+    if (changed) fs.writeFileSync(filePath, content);
   }
 
-  if (missing.length > 0) {
+  if (missing.size > 0) {
     console.error(
-      `[inject-config] 以下の環境変数が未設定のため wrangler.json を置換できませんでした: ${missing.join(', ')}\n` +
+      `[inject-config] 以下の環境変数が未設定のため置換できませんでした:\n  - ${[...missing].join('\n  - ')}\n` +
         'Cloudflareダッシュボードの「Build variables and secrets」に設定してください。',
     );
     process.exit(1);
   }
 
-  fs.writeFileSync(WRANGLER_CONFIG_PATH, content);
-  console.log('[inject-config] wrangler.json へビルド環境変数を注入しました');
+  console.log('[inject-config] ビルド環境変数の注入が完了しました');
 }
 
 main();
