@@ -363,3 +363,110 @@ Workers のリクエスト制限を回避するため、以下の 2 段階の切
   - 状態変更を伴う API（注文・両替・キャンセル・管理者操作等）は `SameSite=Lax` Cookie に加えて **CSRFトークン** の検証を必須とする。
   - パスワードは `password_salt`（ユーザー毎ランダム値）と `SHA-256` で保護する。将来的な強化としては PBKDF2 / bcrypt / scrypt 等のストレッチング付きハッシュへの移行を推奨する。
   - **Cloudflare Bot Management（Bot Fight Mode）** をゾーンレベルで有効化し、本システムの全APIエンドポイント（`/api/*`）への自動化リクエストをスコアリング・ブロックする。ログイン・新規登録の Turnstile、両替APIのユーザー単位レート制限（4.6）と多層的に併用する。**注意点:** Bot Management はあくまで「外部からこのシステムへ入ってくるリクエスト」を守るものであり、Worker が Yahoo Finance へアクセスする際の取得方式（4.6）には影響しない。Yahoo Finance側のアクセス遮断リスクへの対策は、4.6に記載の60秒キャッシュの厳格運用で行う。
+
+## 7. v0.2に向けた変更計画（v0.1.0リリース後の不具合修正・追加要望）
+
+v0.1.0（GitHub Release）リリース後に報告された不具合・追加要望を整理する。本節は**仕様の計画のみ**であり、実装はこれから行う。
+
+### 7.1 認証まわりの不具合・改善
+
+- **7.1.1 Turnstileウィジェットが画面遷移で消える（不具合）**
+  原因: ログイン⇔登録の切り替え時に`innerHTML`で画面全体を再構築しており、Turnstileの`cf-turnstile`要素も一緒に作り直されるが、Turnstile側は最初の1回しか自動レンダリングしないため、2回目以降は空のまま表示される。
+  対応: `turnstile.render(container, {sitekey, callback})`による**明示的レンダリング**に切り替える。画面を離れる際は`turnstile.remove(widgetId)`で確実に破棄し、再表示のたびに再レンダリングする。
+
+- **7.1.2 新規登録: パスワード確認入力**
+  「パスワード」に加えて「パスワード（確認）」欄を追加し、一致しない場合はクライアント側で送信をブロックしてエラー表示する（サーバー側のバリデーションは不要、UI改善のみ）。
+
+- **7.1.3 新規登録と同時にログイン完了**
+  現状: `POST /api/register`は作成のみでセッションを発行せず、ユーザーは登録後に改めてログイン画面でログインし直す必要がある。
+  対応: `POST /api/register`の成功時、`POST /api/login`と同様に`session`/`csrf_token`Cookieをその場で発行する（Turnstile検証は登録時に既に行っているため、二重検証は不要）。フロントは登録成功後、追加のログイン操作なしでそのままアプリ画面へ遷移する。
+
+- **7.1.4 アカウント削除（ユーザー自身）**
+  設定タブに「アカウント削除」ボタンを追加する。押下時に確認ダイアログ（「本当に削除しますか？この操作は取り消せません」等）を表示し、確認後に新規エンドポイント`POST /api/account/delete`（要CSRF・要ログイン）を呼び出す。管理者による抹消（4.5の`DELETED`ステータス変更）と同じ扱いとし、`status='DELETED'`に更新のうえ`sessions`から全セッションを削除する。保有株・取引履歴は監査目的で保持し、物理削除はしない（既存の抹消ユーザーの扱いと同様）。
+
+### 7.2 UI/UXの全般的な改善
+
+- **7.2.1 レスポンシブ対応**
+  現状、`public/styles.css`は`#app { max-width: 480px; margin: 0 auto; }`でモバイル固定幅になっており、PC/タブレットで開いても中央に細長いモバイルUIが表示されてしまう。
+  対応: `@media (min-width: 768px)`等のブレークポイントを追加し、広い画面では
+  - ボトムタブバーではなく左サイドナビゲーション、または上部タブに切り替える
+  - コンテンツ幅を画面に応じて拡張し、余白を活かしたレイアウト（例: ホーム画面は2カラムでポートフォリオと明細を並べる）
+  に変更する。管理画面（`admin.html`）は元々PC向けレイアウトのため対象外。
+
+- **7.2.2 指値有効期限のカスタムUI**
+  ネイティブの`<input type="date">`をやめ、カレンダーUIを自前で実装する（既存の`btn`/`card`デザインに合わせた見た目）。
+  - 選択可能範囲は「当日（取引所現地日付）〜14日先」に固定し、範囲外の日付はそもそも選択できないようグレーアウト・クリック不可にする（フロントエンド側での制限）。
+  - バックエンド側の検証（`isWithinExpiryRange`、`ORDER_EXPIRY_MAX_DAYS`）は既に実装済みで変更不要。今回はフロント側に同等のガードを追加するのみ（フロント・バックエンド両方で弾く、という要件を満たす）。
+
+- **7.2.3 成行注文で指値欄が表示される不具合**
+  成行(`MARKET`)選択時に指値価格・有効期限の入力欄が表示されてしまう不具合を修正する。現状の実装は`orderState.orderType === 'LIMIT'`の条件で表示制御しているはずだが、実際には表示されてしまっているため、原因を再調査したうえで修正する（表示条件の実装漏れ、またはDOM再利用時の状態不整合が疑われる）。
+
+- **7.2.4 日本株の数量+/-ボタンが単元単位になっていない不具合**
+  日本株は+/-ボタンで100株単位、米国株は1株単位で増減するべきだが、実際には日本株でも1株単位になってしまっている。
+  原因（推定）: `findSymbol()`が`state.symbols`（銘柄一覧）から該当銘柄を探せていない。7.3.1で全件プリロード方式をサーバー側検索方式に切り替えることで、銘柄データの取得と紐付けを確実にし、併せて修正する。
+
+### 7.3 銘柄検索・パフォーマンス
+
+- **7.3.1 注文画面の銘柄プルダウンをサーバー側検索方式に変更**
+  米国株が約1万件規模になったため、現状の「初回に全件プリロードしてクライアント側で絞り込み」方式は重く、かつ7.2.4の不具合の原因にもなっている。
+  対応: 銘柄コード入力欄の`input`イベントにデバウンス（例: 300ms）を付け、`GET /api/symbols?q=...`（既存エンドポイント）で都度検索する方式に変更する。全件プリロードは廃止する。
+
+- **7.3.2 銘柄検索画面の新設**
+  注文とは独立した「銘柄検索」画面（新タブまたはホームからの導線）を追加する。
+  - 日本株・米国株どちらも、銘柄名・ティッカーシンボル・証券コードのいずれでも検索できる（既存の`GET /api/symbols?q=...`がcode/name/symbolのLIKE検索に対応済みのため、バックエンド変更は不要）。
+  - 検索結果には現在値をライブ表示する（既存の`/api/live-prices`WSSパススルーへ検索結果分の銘柄を動的にsubscribeする）。
+  - この画面から直接、注文画面へ遷移できるようにする（銘柄を選んだ状態で注文タブを開く）。
+
+- **7.3.3 WSS通信が遅い問題の調査**
+  `/api/live-prices`のパススルー中継が体感で非常に遅いとの報告。実機ログを見ながら原因を切り分ける必要がある（候補: 上流Yahoo側のレスポンス遅延、Worker側のイベントハンドラ実装、再接続の指数バックオフが頻発している、等）。本節では原因調査自体を次回作業のタスクとして明記するに留め、対応方針は調査後に定める。
+
+### 7.4 マイページ（新規画面）
+
+保有資産の推移を確認できる新画面「マイページ」を追加する。
+
+- **表示項目:**
+  - 現金残高の推移（JPY/USD）
+  - 評価額の推移（保有株式の時価評価額）
+  - 総資産の推移（現金+評価額の合計、円換算）
+  - 総資産額（現在値、リアルタイム）
+  - 評価損益（保有中の取引の含み損益合計、現在値ベース）
+- **推移データの取得方法:** 新規テーブル`asset_snapshots`に、**日次（1日1回）**のスナップショットを記録する。既存のCronトリガー（4.10、毎日08:30 JST実行）に同居させ、銘柄マスタ同期と同じタイミングで全ユーザー分のスナップショットを取る。
+  ```sql
+  CREATE TABLE asset_snapshots (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    snapshot_date TEXT NOT NULL, -- YYYY-MM-DD（JST基準）
+    cash_jpy_c INTEGER NOT NULL,
+    cash_usd_c INTEGER NOT NULL,
+    valuation_jpy_c INTEGER NOT NULL, -- 保有株式の時価評価額（円換算）
+    total_assets_jpy_c INTEGER NOT NULL, -- 現金+評価額の合計（円換算）
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX idx_asset_snapshots_user_date ON asset_snapshots(user_id, snapshot_date);
+  ```
+  日次スナップショットのため、当日分の「現在の総資産額」「評価損益」はスナップショットからではなく、その場でHTTP取得した現在値（4.2の成行注文と同じYahoo Finance Chart API、60秒キャッシュ）を使ってリアルタイムに計算する。過去分のグラフ表示のみ`asset_snapshots`を参照する。
+
+### 7.5 現金増額申請（要承認）
+
+ユーザーが運営（管理者）に対してデモ用現金残高の増額を申請し、管理者が承認/却下する機能を追加する。
+
+- **新規テーブル:**
+  ```sql
+  CREATE TABLE cash_topup_requests (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    currency TEXT NOT NULL CHECK (currency IN ('JPY', 'USD')),
+    amount_c INTEGER NOT NULL,
+    reason TEXT, -- 申請理由・メモ（任意入力）
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    requested_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    decided_by TEXT REFERENCES users(id) -- 承認/却下した管理者
+  );
+  CREATE INDEX idx_cash_topup_requests_user ON cash_topup_requests(user_id);
+  CREATE INDEX idx_cash_topup_requests_status ON cash_topup_requests(status);
+  ```
+- **申請（ユーザー側）:** マイページまたは設定から、金額・通貨・理由（任意のメモ欄）を入力して`POST /api/cash-topup-requests`を呼ぶ。ステータスは`PENDING`。
+- **承認/却下（管理画面）:** 管理画面に新しいタブまたはユーザー管理内のセクションとして、`PENDING`な申請の一覧を表示し、承認（`PATCH /api/admin/cash-topup-requests/:id`、`status: APPROVED`）すると、対象ユーザーの該当通貨残高へ即座に加算する。却下時は残高変更なし。承認・却下いずれも`admin_audit_log`へ記録する。
+- **履歴への反映:** 「運営からの入金」は、`trades`テーブル（株式保有専用のスキーマ）には混ぜ込まず、既存の「履歴」画面（4.7、現在は注文/取引/両替のサブタブ）に**「入出金」サブタブを追加**し、承認済み（`APPROVED`）の`cash_topup_requests`をそこに表示する形で対応する。
+
