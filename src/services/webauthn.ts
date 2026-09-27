@@ -58,6 +58,9 @@ export async function createRegistrationOptions(
       transports: c.transports ? JSON.parse(c.transports) : undefined,
     })),
   });
+  // generateRegistrationOptions自体は expectedOrigin との突合せをしないため例外は起きにくいが、
+  // rpID が空文字列等だと内部でエラーになりうるため、呼び出し元(ルートハンドラ)でも
+  // try/catchしてJSONエラーとして返すこと（500を素通しさせない）。
 
   await env.RATE_LIMIT_KV.put(challengeKey('reg', userId), options.challenge, {
     expirationTtl: CHALLENGE_TTL_SECONDS,
@@ -70,19 +73,27 @@ export async function verifyRegistration(
   env: Env,
   userId: string,
   response: RegistrationResponseJSON,
-): Promise<{ verified: boolean; credentialId?: string; publicKeyB64url?: string; counter?: number; transports?: string[] }> {
+): Promise<{ verified: boolean; credentialId?: string; publicKeyB64url?: string; counter?: number; transports?: string[]; error?: string }> {
   const expectedChallenge = await env.RATE_LIMIT_KV.get(challengeKey('reg', userId));
-  if (!expectedChallenge) return { verified: false };
+  if (!expectedChallenge) return { verified: false, error: 'challenge expired or not found' };
 
-  const verification = await verifyRegistrationResponse({
-    response,
-    expectedChallenge,
-    expectedOrigin: env.WEBAUTHN_ORIGIN,
-    expectedRPID: env.WEBAUTHN_RP_ID,
-  });
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response,
+      expectedChallenge,
+      expectedOrigin: env.WEBAUTHN_ORIGIN,
+      expectedRPID: env.WEBAUTHN_RP_ID,
+    });
+  } catch (e) {
+    // WEBAUTHN_RP_ID/WEBAUTHN_ORIGIN が実際のデプロイ先ドメインと一致していない場合、
+    // @simplewebauthn/server はエラーをthrowする。ここで捕捉せず素通しすると
+    // ルートハンドラ側で未捕捉例外となりHTTP 500になってしまうため、必ず捕捉する。
+    return { verified: false, error: e instanceof Error ? e.message : String(e) };
+  }
 
   if (!verification.verified || !verification.registrationInfo) {
-    return { verified: false };
+    return { verified: false, error: 'verification returned not verified' };
   }
 
   const { credential } = verification.registrationInfo;
@@ -120,23 +131,28 @@ export async function verifyAuthentication(
   userId: string,
   response: AuthenticationResponseJSON,
   storedCredential: WebauthnCredentialRow,
-): Promise<{ verified: boolean; newCounter?: number }> {
+): Promise<{ verified: boolean; newCounter?: number; error?: string }> {
   const expectedChallenge = await env.RATE_LIMIT_KV.get(challengeKey('auth', userId));
-  if (!expectedChallenge) return { verified: false };
+  if (!expectedChallenge) return { verified: false, error: 'challenge expired or not found' };
 
-  const verification = await verifyAuthenticationResponse({
-    response,
-    expectedChallenge,
-    expectedOrigin: env.WEBAUTHN_ORIGIN,
-    expectedRPID: env.WEBAUTHN_RP_ID,
-    credential: {
-      id: storedCredential.credential_id,
-      publicKey: base64urlToUint8Array(storedCredential.public_key) as Uint8Array<ArrayBuffer>,
-      counter: storedCredential.counter,
-      transports: storedCredential.transports ? JSON.parse(storedCredential.transports) : undefined,
-    },
-  });
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge,
+      expectedOrigin: env.WEBAUTHN_ORIGIN,
+      expectedRPID: env.WEBAUTHN_RP_ID,
+      credential: {
+        id: storedCredential.credential_id,
+        publicKey: base64urlToUint8Array(storedCredential.public_key) as Uint8Array<ArrayBuffer>,
+        counter: storedCredential.counter,
+        transports: storedCredential.transports ? JSON.parse(storedCredential.transports) : undefined,
+      },
+    });
+  } catch (e) {
+    return { verified: false, error: e instanceof Error ? e.message : String(e) };
+  }
 
-  if (!verification.verified) return { verified: false };
+  if (!verification.verified) return { verified: false, error: 'verification returned not verified' };
   return { verified: true, newCounter: verification.authenticationInfo.newCounter };
 }
