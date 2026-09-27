@@ -10,6 +10,10 @@
 //   KV_RATE_LIMIT_NAMESPACE_ID  — wrangler.json の "__KV_RATE_LIMIT_NAMESPACE_ID__" を置換
 //   TURNSTILE_SITE_KEY          — public/app.js と public/admin.js の
 //                                  "__TURNSTILE_SITE_KEY__" を置換（クライアント側の公開キーなので機密ではない）
+//   WEBAUTHN_RP_ID               — wrangler.json の "__WEBAUTHN_RP_ID__" を置換（例: example.com）
+//   WEBAUTHN_ORIGIN               — wrangler.json の "__WEBAUTHN_ORIGIN__" を置換（例: https://example.com）
+//                                  ※この2つが実際のデプロイ先ドメインと一致していないと、
+//                                    パスキー登録・認証の検証(@simplewebauthn/server)が例外を投げて失敗する。
 //
 // 注意: TURNSTILE_SECRET_KEY（サーバー側の秘密キー）はこのビルド変数とは別物。
 // そちらはWorker本体の実行時シークレット（Settings > Variables and Secrets、
@@ -28,6 +32,8 @@ const TOKEN_TO_ENV_VAR = {
   __D1_DATABASE_ID__: 'D1_DATABASE_ID',
   __KV_RATE_LIMIT_NAMESPACE_ID__: 'KV_RATE_LIMIT_NAMESPACE_ID',
   __TURNSTILE_SITE_KEY__: 'TURNSTILE_SITE_KEY',
+  __WEBAUTHN_RP_ID__: 'WEBAUTHN_RP_ID',
+  __WEBAUTHN_ORIGIN__: 'WEBAUTHN_ORIGIN',
 };
 
 const FILES_TO_PROCESS = ['wrangler.json', 'public/app.js', 'public/admin.js'];
