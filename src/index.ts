@@ -159,6 +159,17 @@ app.get('/api/live-prices', requireAuth, async (c) => {
 
 app.notFound((c) => c.json({ error: 'Not Found' }, 404));
 
+/**
+ * 未捕捉の例外を一律でJSONの500として返す。
+ * これが無いと、ルートハンドラ内の例外がCloudflareの素のHTMLエラーページとして
+ * ブラウザに返ってしまい、フロント側で原因が全く分からなくなる
+ * （WebAuthn検証の例外がこの経路で発生していたため追加した）。
+ */
+app.onError((err, c) => {
+  console.error('unhandled error', err);
+  return c.json({ error: 'internal server error', detail: err.message }, 500);
+});
+
 export default {
   fetch: app.fetch,
 
