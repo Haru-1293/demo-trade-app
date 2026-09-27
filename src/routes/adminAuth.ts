@@ -120,8 +120,13 @@ app.post('/webauthn/register-options', requireAdminSession, async (c) => {
     .bind(adminAuth.userId)
     .all<WebauthnCredentialRow>();
 
-  const options = await createRegistrationOptions(c.env, adminAuth.userId, user.email, existing ?? []);
-  return c.json(options);
+  try {
+    const options = await createRegistrationOptions(c.env, adminAuth.userId, user.email, existing ?? []);
+    return c.json(options);
+  } catch (e) {
+    // WEBAUTHN_RP_ID/WEBAUTHN_RP_NAME が未設定・不正だとここで例外になりうる。素通しさせず400で返す。
+    return c.json({ error: 'registration options generation failed', detail: e instanceof Error ? e.message : String(e) }, 400);
+  }
 });
 
 /** POST /api/admin-auth/webauthn/register-verify */
@@ -131,7 +136,8 @@ app.post('/webauthn/register-verify', requireAdminCsrf, requireAdminSession, asy
 
   const result = await verifyRegistration(c.env, adminAuth.userId, body.credential);
   if (!result.verified || !result.credentialId || !result.publicKeyB64url) {
-    return c.json({ error: 'verification failed' }, 400);
+    // detailにWEBAUTHN_RP_ID/WEBAUTHN_ORIGIN不一致等の具体的な原因が入る。デバッグ用に返す。
+    return c.json({ error: 'verification failed', detail: result.error }, 400);
   }
 
   await c.env.DB.prepare(
@@ -192,7 +198,7 @@ app.post('/webauthn/login-verify', async (c) => {
   if (!stored) return c.json({ error: 'invalid credential' }, 401);
 
   const result = await verifyAuthentication(c.env, body.userId, body.credential, stored);
-  if (!result.verified) return c.json({ error: 'verification failed' }, 401);
+  if (!result.verified) return c.json({ error: 'verification failed', detail: result.error }, 401);
 
   await c.env.DB.prepare(`UPDATE webauthn_credentials SET counter = ? WHERE id = ?`)
     .bind(result.newCounter ?? stored.counter, stored.id)
