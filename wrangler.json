@@ -47,7 +47,8 @@
     "WEBAUTHN_ORIGIN": "__WEBAUTHN_ORIGIN__",
     "JPX_LISTED_XLSX_URL": "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx",
     "SEC_TICKERS_URL": "https://www.sec.gov/files/company_tickers.json",
-    "SEC_USER_AGENT": "REPLACE_WITH_AppName contact@example.com",
+    "SEC_USER_AGENT": "__SEC_USER_AGENT__",
+    "EMAIL_FROM_ADDRESS": "__EMAIL_FROM_ADDRESS__",
     "SYMBOL_CACHE_TTL_SECONDS": "43200"
   },
   "observability": {
