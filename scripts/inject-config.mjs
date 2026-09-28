@@ -14,6 +14,10 @@
 //   WEBAUTHN_ORIGIN               — wrangler.json の "__WEBAUTHN_ORIGIN__" を置換（例: https://example.com）
 //                                  ※この2つが実際のデプロイ先ドメインと一致していないと、
 //                                    パスキー登録・認証の検証(@simplewebauthn/server)が例外を投げて失敗する。
+//   SEC_USER_AGENT                — wrangler.json の "__SEC_USER_AGENT__" を置換
+//                                  （SECのフェアユースポリシーに従い、アプリ名+連絡先を明示。例: "demo-trade-app you@example.com"）
+//   EMAIL_FROM_ADDRESS            — wrangler.json の "__EMAIL_FROM_ADDRESS__" を置換
+//                                  （パスワード変更通知メールの送信元。Email Routingで検証済みのアドレスであること）
 //
 // 注意: TURNSTILE_SECRET_KEY（サーバー側の秘密キー）はこのビルド変数とは別物。
 // そちらはWorker本体の実行時シークレット（Settings > Variables and Secrets、
@@ -34,6 +38,8 @@ const TOKEN_TO_ENV_VAR = {
   __TURNSTILE_SITE_KEY__: 'TURNSTILE_SITE_KEY',
   __WEBAUTHN_RP_ID__: 'WEBAUTHN_RP_ID',
   __WEBAUTHN_ORIGIN__: 'WEBAUTHN_ORIGIN',
+  __SEC_USER_AGENT__: 'SEC_USER_AGENT',
+  __EMAIL_FROM_ADDRESS__: 'EMAIL_FROM_ADDRESS',
 };
 
 const FILES_TO_PROCESS = ['wrangler.json', 'public/app.js', 'public/admin.js'];
