@@ -3,16 +3,17 @@ import { EmailMessage } from 'cloudflare:email';
 
 /**
  * 仕様書4.5: 管理者によるパスワード直接変更時、Cloudflare Email Routingで通知メールを送る。
- * 送信元アドレスは Email Routing 側で検証済みのアドレスである必要がある（デプロイ時に置き換える）。
+ * 送信元アドレスは環境変数 `EMAIL_FROM_ADDRESS`（ビルド時注入）から読み込む。
+ * Email Routing 側で検証済みのアドレスである必要がある。
  * mimetextなどの外部ライブラリは使わず、シンプルなプレーンテキストのRFC822メッセージを自前で組む。
  */
-const FROM_ADDRESS = 'no-reply@example.com'; // TODO: 実際に検証済みの送信元アドレスへ置き換える
 
 export async function sendPasswordChangedEmail(
   env: Env,
   toAddress: string,
   username: string,
 ): Promise<boolean> {
+  const fromAddress = env.EMAIL_FROM_ADDRESS;
   try {
     const subject = '【デモトレード】パスワードが変更されました';
     const body = [
@@ -26,7 +27,7 @@ export async function sendPasswordChangedEmail(
     ].join('\r\n');
 
     const raw = [
-      `From: ${FROM_ADDRESS}`,
+      `From: ${fromAddress}`,
       `To: ${toAddress}`,
       `Subject: ${subject}`,
       'Content-Type: text/plain; charset=utf-8',
@@ -34,7 +35,7 @@ export async function sendPasswordChangedEmail(
       body,
     ].join('\r\n');
 
-    const message = new EmailMessage(FROM_ADDRESS, toAddress, raw);
+    const message = new EmailMessage(fromAddress, toAddress, raw);
     await env.SEND_EMAIL.send(message);
     return true;
   } catch {
