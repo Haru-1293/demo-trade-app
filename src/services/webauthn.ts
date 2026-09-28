@@ -27,6 +27,23 @@ function challengeKey(kind: 'reg' | 'auth', userId: string): string {
   return `webauthn_challenge:${kind}:${userId}`;
 }
 
+/**
+ * WebAuthnのオリジン比較は完全一致（ブラウザが送るclientDataJSONのoriginは末尾スラッシュ無し）。
+ * 環境変数の設定ミス（末尾の"/"付きURLをそのままコピペした場合など）で
+ * 検証が失敗しないよう、末尾のスラッシュを除去して正規化する。
+ */
+function normalizeOrigin(origin: string): string {
+  return origin.trim().replace(/\/+$/, '');
+}
+
+/**
+ * RP IDはスキーム(https://)やポート・パスを含まないホスト名のみ。
+ * 誤って"https://example.com/"のように貼り付けられても、ホスト名部分だけを取り出して正規化する。
+ */
+function normalizeRpId(rpId: string): string {
+  return rpId.trim().replace(/^https?:\/\//, '').replace(/[\/:].*$/, '');
+}
+
 function base64urlToUint8Array(b64url: string): Uint8Array {
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(b64url.length / 4) * 4, '=');
   const bin = atob(b64);
@@ -49,7 +66,7 @@ export async function createRegistrationOptions(
 ) {
   const options = await generateRegistrationOptions({
     rpName: env.WEBAUTHN_RP_NAME,
-    rpID: env.WEBAUTHN_RP_ID,
+    rpID: normalizeRpId(env.WEBAUTHN_RP_ID),
     userID: new TextEncoder().encode(userId) as Uint8Array<ArrayBuffer>,
     userName: email,
     attestationType: 'none',
@@ -82,8 +99,8 @@ export async function verifyRegistration(
     verification = await verifyRegistrationResponse({
       response,
       expectedChallenge,
-      expectedOrigin: env.WEBAUTHN_ORIGIN,
-      expectedRPID: env.WEBAUTHN_RP_ID,
+      expectedOrigin: normalizeOrigin(env.WEBAUTHN_ORIGIN),
+      expectedRPID: normalizeRpId(env.WEBAUTHN_RP_ID),
     });
   } catch (e) {
     // WEBAUTHN_RP_ID/WEBAUTHN_ORIGIN が実際のデプロイ先ドメインと一致していない場合、
@@ -112,7 +129,7 @@ export async function createAuthenticationOptions(
   credentials: WebauthnCredentialRow[],
 ) {
   const options = await generateAuthenticationOptions({
-    rpID: env.WEBAUTHN_RP_ID,
+    rpID: normalizeRpId(env.WEBAUTHN_RP_ID),
     allowCredentials: credentials.map((c) => ({
       id: c.credential_id,
       transports: c.transports ? JSON.parse(c.transports) : undefined,
@@ -140,8 +157,8 @@ export async function verifyAuthentication(
     verification = await verifyAuthenticationResponse({
       response,
       expectedChallenge,
-      expectedOrigin: env.WEBAUTHN_ORIGIN,
-      expectedRPID: env.WEBAUTHN_RP_ID,
+      expectedOrigin: normalizeOrigin(env.WEBAUTHN_ORIGIN),
+      expectedRPID: normalizeRpId(env.WEBAUTHN_RP_ID),
       credential: {
         id: storedCredential.credential_id,
         publicKey: base64urlToUint8Array(storedCredential.public_key) as Uint8Array<ArrayBuffer>,
