@@ -44,6 +44,9 @@ export interface Env {
   SEC_TICKERS_URL: string;
   SEC_USER_AGENT: string;
   SYMBOL_CACHE_TTL_SECONDS: string;
+
+  // パスワード変更通知メールの送信元アドレス（Email Routingで検証済みのアドレスである必要がある）
+  EMAIL_FROM_ADDRESS: string;
 }
 
 export interface UserRow {
