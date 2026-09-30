@@ -12,6 +12,19 @@ const app = new Hono<{ Bindings: Env }>();
 app.get('/symbols', requireAuth, async (c) => {
   const q = c.req.query('q');
 
+  // 市場+コードの完全一致検索（注文画面の単元取得用。全件プリロードに依存しない）
+  const exactMarket = c.req.query('market');
+  const exactCode = c.req.query('code');
+  if (exactCode && (exactMarket === 'JP' || exactMarket === 'US')) {
+    const { results } = await c.env.DB.prepare(
+      `SELECT code, market, symbol, name, currency, unit_size FROM symbols
+       WHERE active = 1 AND market = ? AND code = ? LIMIT 1`,
+    )
+      .bind(exactMarket, exactCode.toUpperCase())
+      .all();
+    return c.json({ symbols: results });
+  }
+
   if (!q) {
     const cacheKey = 'symbols_full_cache';
     const cached = await c.env.RATE_LIMIT_KV.get(cacheKey);
