@@ -309,3 +309,18 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
   0% { opacity: 0.4; }
   100% { opacity: 1; }
 }
+
+/* 保有銘柄行のアクションボタン（追加購入／売却） */
+.row-actions { display: flex; gap: 8px; margin-top: 8px; }
+.row-action-btn {
+  border: 1px solid var(--primary);
+  background: transparent;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+}
+.row-action-btn.sell { border-color: var(--danger); color: var(--danger); }
+.row-action-btn:active { opacity: 0.6; }
