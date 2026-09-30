@@ -382,3 +382,32 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
   /* 保有銘柄などの行は少し余白を持たせる */
   .list-row { padding: 14px 18px; }
 }
+
+/* hidden属性は他のdisplay指定より必ず優先する */
+[hidden] { display: none !important; }
+
+/* アカウント削除・モーダル */
+.danger-title { color: var(--danger); }
+.btn-danger-outline {
+  width: 100%; padding: 12px; border-radius: var(--radius);
+  border: 1px solid var(--danger); background: transparent; color: var(--danger);
+  font-size: 15px; font-weight: 700; cursor: pointer;
+}
+.btn-danger {
+  padding: 12px; border-radius: var(--radius); border: none;
+  background: var(--danger); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer;
+}
+.btn-danger:disabled { opacity: 0.5; }
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal {
+  width: 100%; max-width: 380px; background: var(--card-bg);
+  border-radius: var(--radius); padding: 20px;
+}
+.modal-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+.modal-text { font-size: 13px; color: var(--text-sub); line-height: 1.6; margin: 0 0 14px; }
+.modal-actions { display: flex; gap: 10px; }
+.modal-actions .btn, .modal-actions button { flex: 1; }
