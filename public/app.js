@@ -573,8 +573,13 @@ function renderAuth() {
       </div>
       <div class="form-group">
         <label>パスワード</label>
-        <input type="password" id="auth-password">
+        <input type="password" id="auth-password" autocomplete="${isLogin ? 'current-password' : 'new-password'}">
       </div>
+      ${isLogin ? '' : `
+      <div class="form-group">
+        <label>パスワード（確認）</label>
+        <input type="password" id="auth-password-confirm" autocomplete="new-password">
+      </div>`}
       <div class="form-group" id="turnstile-container">
         <div id="turnstile-widget"></div>
       </div>
@@ -595,6 +600,10 @@ function renderAuth() {
     const password = document.getElementById('auth-password').value;
     const turnstileToken = window.__turnstileToken || '';
     if (!username || !password) { toast('ユーザー名とパスワードを入力してください'); return; }
+    if (!isLogin) {
+      const confirm = document.getElementById('auth-password-confirm').value;
+      if (password !== confirm) { toast('パスワードが一致しません'); return; }
+    }
     if (!turnstileToken) { toast('ボット確認の完了をお待ちください'); return; }
     try {
       if (isLogin) {
