@@ -71,11 +71,13 @@ function usd(amountC) {
 const app = document.getElementById('app');
 
 function render() {
+  document.body.classList.toggle('logged-in', isLoggedIn());
   if (!isLoggedIn()) {
     disconnectLiveFeed();
     renderAuth();
     return;
   }
+  removeTurnstile();
   app.innerHTML = `
     <header class="app-header">
       <h1>デモトレード</h1>
@@ -574,7 +576,7 @@ function renderAuth() {
         <input type="password" id="auth-password">
       </div>
       <div class="form-group" id="turnstile-container">
-        <div class="cf-turnstile" data-sitekey="__TURNSTILE_SITE_KEY__" data-callback="onTurnstileToken"></div>
+        <div id="turnstile-widget"></div>
       </div>
       <button class="btn btn-primary" id="auth-submit">${isLogin ? 'ログイン' : '新規登録'}</button>
       <div class="auth-switch">
@@ -583,6 +585,7 @@ function renderAuth() {
       </div>
     </div>
   `;
+  renderTurnstile();
   document.getElementById('auth-switch-btn').addEventListener('click', () => {
     state.authMode = isLogin ? 'register' : 'login';
     renderAuth();
@@ -592,24 +595,69 @@ function renderAuth() {
     const password = document.getElementById('auth-password').value;
     const turnstileToken = window.__turnstileToken || '';
     if (!username || !password) { toast('ユーザー名とパスワードを入力してください'); return; }
+    if (!turnstileToken) { toast('ボット確認の完了をお待ちください'); return; }
     try {
       if (isLogin) {
         await api('/login', { method: 'POST', body: { username, password, turnstileToken } });
         toast('ログインしました');
       } else {
+        // 登録APIがセッションも発行するため、そのままログイン状態になる
         await api('/register', { method: 'POST', body: { username, password, turnstileToken } });
-        toast('登録しました。続けてログインしてください');
+        toast('登録しました');
         state.authMode = 'login';
       }
       render();
     } catch (e) {
       toast(`失敗しました: ${e.message}`);
+      resetTurnstileToken(); // トークンは1回限り有効なので再取得させる
     }
   });
 }
 
 // Turnstileのコールバック（Turnstileのscriptタグ読み込み後にグローバルとして呼ばれる）
-window.onTurnstileToken = (token) => { window.__turnstileToken = token; };
+// ---------- Turnstile（明示的レンダリング） ----------
+// ログイン⇔登録の切替で画面が再描画されるたびにウィジェットを作り直す。
+// 自動レンダリング(.cf-turnstile)だと、innerHTML差し替え後にウィジェットが消える。
+const TURNSTILE_SITE_KEY = '__TURNSTILE_SITE_KEY__';
+let turnstileWidgetId = null;
+let turnstileGeneration = 0;
+
+function removeTurnstile() {
+  turnstileGeneration++; // 待機中の描画ループを無効化
+  if (turnstileWidgetId !== null && window.turnstile) {
+    try { window.turnstile.remove(turnstileWidgetId); } catch { /* noop */ }
+  }
+  turnstileWidgetId = null;
+  window.__turnstileToken = '';
+}
+
+function renderTurnstile() {
+  removeTurnstile();
+  const gen = turnstileGeneration;
+  const tryRender = (retry) => {
+    if (gen !== turnstileGeneration) return; // 新しい描画要求があれば中止
+    const el = document.getElementById('turnstile-widget');
+    if (!el) return;
+    if (!window.turnstile) { // api.jsの読み込み待ち（最大約10秒）
+      if (retry < 100) setTimeout(() => tryRender(retry + 1), 100);
+      return;
+    }
+    turnstileWidgetId = window.turnstile.render(el, {
+      sitekey: TURNSTILE_SITE_KEY,
+      callback: (token) => { window.__turnstileToken = token; },
+      'expired-callback': () => { window.__turnstileToken = ''; },
+      'error-callback': () => { window.__turnstileToken = ''; },
+    });
+  };
+  tryRender(0);
+}
+
+function resetTurnstileToken() {
+  window.__turnstileToken = '';
+  if (turnstileWidgetId !== null && window.turnstile) {
+    try { window.turnstile.reset(turnstileWidgetId); } catch { /* noop */ }
+  }
+}
 
 // ---------- ライブ株価フィード (Yahoo Finance WSS, 表示専用) ----------
 // 注意: 非公式・無保証のストリーミングエンドポイントを直接ブラウザから利用する。
