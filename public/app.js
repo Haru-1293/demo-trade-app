@@ -284,7 +284,7 @@ async function renderOrder(main) {
         <div class="qty-hint" id="qty-hint"></div>
       </div>
 
-      <div id="limit-fields" style="display:${orderState.orderType === 'LIMIT' ? 'block' : 'none'}">
+      <div id="limit-fields" ${orderState.orderType === 'LIMIT' ? '' : 'hidden'}>
         <div class="form-group">
           <label>指値価格</label>
           <input type="number" id="order-target-price" step="0.01" value="${orderState.targetPrice}">
@@ -315,7 +315,11 @@ async function renderOrder(main) {
       renderOrder(main);
     }));
   main.querySelectorAll('#type-seg button').forEach((b) =>
-    b.addEventListener('click', () => { orderState.orderType = b.dataset.v; renderOrder(main); }));
+    b.addEventListener('click', () => {
+      orderState.orderType = b.dataset.v;
+      if (orderState.orderType === 'MARKET') { orderState.targetPrice = ''; orderState.expiresDate = ''; }
+      renderOrder(main);
+    }));
   const settleSeg = document.getElementById('settle-seg');
   if (settleSeg) {
     settleSeg.querySelectorAll('button').forEach((b) =>
@@ -325,22 +329,23 @@ async function renderOrder(main) {
   document.getElementById('order-code').addEventListener('input', (e) => {
     orderState.code = e.target.value.trim().toUpperCase();
     updateQtyHint();
+    scheduleSymbolResolve();
   });
   document.getElementById('order-qty').addEventListener('input', (e) => {
     orderState.quantity = Math.max(1, parseInt(e.target.value || '1', 10));
   });
+  // +/-は単元の倍数にスナップして増減する（例: 単元100で 1→100→200、250→300 / 200）
   document.getElementById('qty-minus').addEventListener('click', () => {
-    const sym = findSymbol();
-    const step = sym ? sym.unit_size : 1;
-    orderState.quantity = Math.max(1, orderState.quantity - step);
+    const step = getUnitStep();
+    orderState.quantity = Math.max(1, Math.ceil(orderState.quantity / step) * step - step);
     document.getElementById('order-qty').value = orderState.quantity;
   });
   document.getElementById('qty-plus').addEventListener('click', () => {
-    const sym = findSymbol();
-    const step = sym ? sym.unit_size : 1;
-    orderState.quantity = orderState.quantity + step;
+    const step = getUnitStep();
+    orderState.quantity = (Math.floor(orderState.quantity / step) + 1) * step;
     document.getElementById('order-qty').value = orderState.quantity;
   });
+  scheduleSymbolResolve(0);
 
   const targetPriceEl = document.getElementById('order-target-price');
   if (targetPriceEl) targetPriceEl.addEventListener('input', (e) => { orderState.targetPrice = e.target.value; });
@@ -353,11 +358,40 @@ async function renderOrder(main) {
 function findSymbol() {
   return state.symbols.find((s) => s.market === orderState.market && s.code === orderState.code);
 }
+
+// 1回の注文単位。銘柄が未解決の間も、日本株は既定100株で動かす（米国株は1株）。
+function getUnitStep() {
+  const sym = findSymbol();
+  const u = sym ? Number(sym.unit_size) : 0;
+  if (u > 0) return u;
+  return orderState.market === 'JP' ? 100 : 1;
+}
+
+// 銘柄一覧の全件プリロードに依存せず、入力中のコードをサーバーで完全一致検索して補完する
+let symbolResolveTimer = null;
+function scheduleSymbolResolve(delay = 250) {
+  clearTimeout(symbolResolveTimer);
+  symbolResolveTimer = setTimeout(resolveSymbol, delay);
+}
+async function resolveSymbol() {
+  const { market, code } = orderState;
+  if (!code || findSymbol()) { updateQtyHint(); return; }
+  try {
+    const { symbols } = await api(`/symbols?market=${encodeURIComponent(market)}&code=${encodeURIComponent(code)}`);
+    for (const sym of symbols || []) {
+      if (!state.symbols.some((x) => x.market === sym.market && x.code === sym.code)) state.symbols.push(sym);
+    }
+  } catch { /* noop */ }
+  // 応答待ちの間に入力が変わっていたら反映しない
+  if (orderState.market === market && orderState.code === code) updateQtyHint();
+}
 function updateQtyHint() {
   const hint = document.getElementById('qty-hint');
   if (!hint) return;
   const sym = findSymbol();
-  hint.textContent = sym ? `単元: ${sym.unit_size}株 / 通貨: ${sym.currency}` : '銘柄コードを入力してください';
+  hint.textContent = sym
+    ? `単元: ${sym.unit_size}株 / 通貨: ${sym.currency}`
+    : (orderState.code ? '銘柄を確認中…（見つからない場合はコードをご確認ください）' : '銘柄コードを入力してください');
   updateOrderPricePreview(sym);
 }
 
@@ -540,8 +574,12 @@ function renderSettings(main) {
 
       <div class="section-title">アカウント</div>
       <button class="btn btn-outline" id="logout-btn">ログアウト</button>
+
+      <div class="section-title danger-title">危険な操作</div>
+      <button class="btn btn-danger-outline" id="delete-account-btn">アカウントを削除する</button>
     </div>
   `;
+  document.getElementById('delete-account-btn').addEventListener('click', openDeleteAccountDialog);
   document.getElementById('pass-submit').addEventListener('click', async () => {
     const currentPassword = document.getElementById('cur-pass').value;
     const newPassword = document.getElementById('new-pass').value;
@@ -555,6 +593,47 @@ function renderSettings(main) {
   document.getElementById('logout-btn').addEventListener('click', async () => {
     try { await api('/logout', { method: 'POST' }); } catch { /* noop */ }
     render();
+  });
+}
+
+// ---------- アカウント削除 ----------
+function openDeleteAccountDialog() {
+  if (document.getElementById('modal-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'modal-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-title">アカウントを削除しますか？</div>
+      <p class="modal-text">保有銘柄・注文・取引履歴・両替履歴を含むすべてのデータが完全に削除され、元に戻せません。</p>
+      <div class="form-group">
+        <label>確認のためパスワードを入力</label>
+        <input type="password" id="delete-pass" autocomplete="current-password">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-outline" id="delete-cancel">キャンセル</button>
+        <button class="btn btn-danger" id="delete-confirm">削除する</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById('delete-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('delete-confirm').addEventListener('click', async (e) => {
+    const password = document.getElementById('delete-pass').value;
+    if (!password) { toast('パスワードを入力してください'); return; }
+    e.target.disabled = true;
+    try {
+      await api('/account/delete', { method: 'POST', body: { password } });
+      close();
+      disconnectLiveFeed();
+      state.authMode = 'login';
+      toast('アカウントを削除しました');
+      render();
+    } catch (err) {
+      e.target.disabled = false;
+      toast(`削除に失敗しました: ${err.message}`);
+    }
   });
 }
 
