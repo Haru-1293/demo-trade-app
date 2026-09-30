@@ -8,8 +8,8 @@
        クライアントは自ドメインへの接続のみで済む(仕様書4.8) -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; frame-src https://challenges.cloudflare.com;" />
   <link rel="stylesheet" href="/styles.css" />
-  <!-- Turnstile: サイトキーはapp.js側で __TURNSTILE_SITE_KEY__ をCloudflareダッシュボードで発行した値に置き換える -->
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <!-- Turnstile: 明示的レンダリング(render=explicit)。ウィジェット生成はapp.jsのrenderTurnstile()が行う。サイトキーはビルド時にapp.js内の__TURNSTILE_SITE_KEY__へ注入される -->
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 </head>
 <body>
   <div id="app"><div class="empty-hint">読み込み中...</div></div>
