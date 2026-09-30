@@ -159,6 +159,10 @@ async function renderHome(main) {
             ・現在値 <span data-live-symbol="${t.symbol}" data-buy-price="${t.buy_price}">${t.market === 'JP' ? '¥' : '$'}${t.buy_price}</span>
             <span class="live-dot" data-live-dot="${t.symbol}" title="ライブ未接続">●</span>
           </div>
+          <div class="row-actions">
+            <button type="button" class="row-action-btn buy" data-holding-action="BUY" data-market="${t.market}" data-code="${t.code}" data-qty="${t.quantity}">追加購入</button>
+            <button type="button" class="row-action-btn sell" data-holding-action="SELL" data-market="${t.market}" data-code="${t.code}" data-qty="${t.quantity}">売却</button>
+          </div>
         </div>
         <div class="value" data-live-value="${t.symbol}" data-market="${t.market}" data-quantity="${t.quantity}">
           ${t.market === 'JP' ? yenFromPrice(t.buy_price, t.quantity) : usdFromPrice(t.buy_price, t.quantity)}
@@ -174,12 +178,35 @@ async function renderHome(main) {
     </div>
   `;
 
+  main.querySelectorAll('[data-holding-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      startOrderFromHolding(btn.dataset.market, btn.dataset.code, btn.dataset.holdingAction, parseInt(btn.dataset.qty, 10));
+    });
+  });
+
   if (state.portfolio.length) {
     connectLiveFeed();
     subscribeLive(state.portfolio.map((t) => t.symbol));
     // 接続前に既にpriceを持っていれば即反映
     state.portfolio.forEach((t) => applyLivePriceToDom(t.symbol));
   }
+}
+// 保有銘柄から注文タブへ遷移し、銘柄・売買方向を事前セットする
+function startOrderFromHolding(market, code, side, heldQty) {
+  const sym = state.symbols.find((x) => x.market === market && x.code === code);
+  const unit = sym && sym.unit_size ? sym.unit_size : (market === 'JP' ? 100 : 1);
+  orderState.market = market;
+  orderState.code = code;
+  orderState.side = side;
+  orderState.orderType = 'MARKET';
+  orderState.targetPrice = '';
+  orderState.expiresDate = '';
+  orderState.settlementCurrency = 'NATIVE';
+  orderState.unitSize = unit;
+  // 売却は保有数を超えない範囲で1単元を初期値に
+  orderState.quantity = side === 'SELL' && heldQty > 0 ? Math.min(unit, heldQty) : unit;
+  state.tab = 'order';
+  render();
 }
 function yenFromPrice(price, qty) { return '¥' + Math.round(price * qty).toLocaleString(); }
 function usdFromPrice(price, qty) { return '$' + (price * qty).toFixed(2); }
