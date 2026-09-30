@@ -175,4 +175,44 @@ app.post('/account/password', requireCsrf, requireAuth, async (c) => {
   return c.json({ ok: true });
 });
 
+/**
+ * POST /api/account/delete — ログイン中ユーザー本人のアカウント削除（仕様書v0.2）
+ * パスワード再入力必須。関連データ（保有・注文・両替・セッション等）をまとめて物理削除する。
+ * 管理者アカウントは誤削除・監査ログの整合性保護のため、この経路では削除不可。
+ */
+app.post('/account/delete', requireCsrf, requireAuth, async (c) => {
+  const auth = c.get('auth');
+  const body = await c.req.json<{ password: string }>().catch(() => null);
+  if (!body || !body.password) return c.json({ error: 'password required' }, 400);
+
+  const user = await c.env.DB.prepare(
+    `SELECT password_salt, password_hash, role FROM users WHERE id = ?`,
+  )
+    .bind(auth.userId)
+    .first<{ password_salt: string; password_hash: string; role: string }>();
+  if (!user) return c.json({ error: 'not found' }, 404);
+  if (user.role === 'ADMIN') return c.json({ error: 'admin account cannot be deleted' }, 403);
+
+  const ok = await verifyPassword(body.password, user.password_salt, user.password_hash);
+  if (!ok) return c.json({ error: 'password incorrect' }, 400);
+
+  const uid = auth.userId;
+  // 外部キー制約のため子テーブル→usersの順に、1バッチ(トランザクション)で削除する
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM admin_sessions WHERE user_id = ?`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM webauthn_credentials WHERE user_id = ?`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM admin_audit_log WHERE target_user_id = ?`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM fx_transactions WHERE user_id = ?`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM orders WHERE user_id = ?`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM trades WHERE user_id = ?`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(uid),
+  ]);
+
+  const cookieName = c.env.SESSION_COOKIE_NAME || 'session';
+  c.header('Set-Cookie', `${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
+  c.header('Set-Cookie', `csrf_token=; Secure; SameSite=Lax; Path=/; Max-Age=0`, { append: true });
+  return c.json({ ok: true });
+});
+
 export default app;
