@@ -324,3 +324,61 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 }
 .row-action-btn.sell { border-color: var(--danger); color: var(--danger); }
 .row-action-btn:active { opacity: 0.6; }
+
+/* ---------- レスポンシブ対応 ---------- */
+.auth-screen { width: 100%; max-width: 420px; margin: 0 auto; }
+.toast { width: max-content; }
+
+/* タブレット (768px〜): コンテンツ幅を広げる */
+@media (min-width: 768px) {
+  #app { max-width: 720px; }
+  .tab-bar { max-width: 720px; }
+  .section { padding: 16px 24px; }
+  .app-header { padding: 16px 24px; }
+  .app-header h1 { font-size: 19px; }
+  .list-row .name { font-size: 15px; }
+  .list-row .sub { font-size: 13px; }
+  .list-row .value { font-size: 15px; }
+  .tab-item { font-size: 11px; }
+  .tab-item .icon { font-size: 22px; }
+}
+
+/* PC (1024px〜): 左サイドバーナビ + 中央コンテンツ */
+@media (min-width: 1024px) {
+  :root { --sidebar-width: 220px; }
+  body.logged-in { padding-left: var(--sidebar-width); }
+  body.logged-in #app {
+    max-width: 920px;
+    padding-bottom: 32px;
+  }
+  body.logged-in .tab-bar {
+    top: 0;
+    bottom: 0;
+    left: 0;
+    transform: none;
+    width: var(--sidebar-width);
+    max-width: none;
+    height: 100vh;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 72px 12px 12px;
+    border-top: none;
+    border-right: 1px solid var(--border);
+  }
+  body.logged-in .tab-item {
+    flex: none;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-size: 14px;
+  }
+  body.logged-in .tab-item:hover { background: #f3f3f3; }
+  body.logged-in .tab-item.active { background: #e9f9ef; }
+  body.logged-in .tab-item .icon { font-size: 20px; }
+  body.logged-in .toast { bottom: 24px; }
+  /* 保有銘柄などの行は少し余白を持たせる */
+  .list-row { padding: 14px 18px; }
+}
