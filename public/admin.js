@@ -226,6 +226,7 @@ function render() {
     <div class="admin-tabs">
       <button data-t="users" class="${state.tab === 'users' ? 'active' : ''}">ユーザー管理</button>
       <button data-t="symbols" class="${state.tab === 'symbols' ? 'active' : ''}">銘柄管理</button>
+      <button data-t="topup" class="${state.tab === 'topup' ? 'active' : ''}">現金申請</button>
     </div>
     <div class="admin-panel" id="admin-panel"><div class="empty-hint">読み込み中...</div></div>
   `;
@@ -239,6 +240,7 @@ function render() {
 
   if (state.tab === 'users') renderUsers();
   if (state.tab === 'symbols') renderSymbols();
+  if (state.tab === 'topup') renderTopupRequests();
 }
 
 // ---------- ユーザー管理 ----------
@@ -458,3 +460,82 @@ async function toggleSymbolActive(sym) {
 }
 
 init();
+
+// ---------- 現金増額申請（仕様書7.5） ----------
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function formatTopupAmount(r) {
+  return r.currency === 'JPY'
+    ? `¥${Math.floor(r.amount_c / 100).toLocaleString()}`
+    : `$${(r.amount_c / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+}
+
+async function renderTopupRequests() {
+  const panel = document.getElementById('admin-panel');
+  let pending, decided;
+  try {
+    [{ requests: pending }, { requests: decided }] = await Promise.all([
+      api('/admin/cash-topup-requests?status=PENDING'),
+      api('/admin/cash-topup-requests?status=ALL'),
+    ]);
+  } catch (e) {
+    panel.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    return;
+  }
+  const done = decided.filter((r) => r.status !== 'PENDING').slice(0, 30);
+  const when = (sec) => (sec ? new Date(sec * 1000).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }) : '');
+
+  panel.innerHTML = `
+    <h3 style="margin:0 0 8px;font-size:14px">承認待ち（${pending.length}件）</h3>
+    ${pending.length ? `
+    <table class="admin-table">
+      <thead><tr><th>申請日時</th><th>ユーザー</th><th>金額</th><th>理由・メモ</th><th>操作</th></tr></thead>
+      <tbody>
+        ${pending.map((r) => `
+          <tr data-req-id="${r.id}">
+            <td>${when(r.requested_at)}</td>
+            <td>${escapeHtml(r.username)}</td>
+            <td>${formatTopupAmount(r)}</td>
+            <td>${r.reason ? escapeHtml(r.reason) : '<span style="color:var(--text-sub)">なし</span>'}</td>
+            <td class="actions">
+              <button data-decide="APPROVED" class="primary">承認</button>
+              <button data-decide="REJECTED" class="danger">却下</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : '<div class="empty-hint">承認待ちの申請はありません</div>'}
+
+    <h3 style="margin:20px 0 8px;font-size:14px">処理済み（直近30件）</h3>
+    ${done.length ? `
+    <table class="admin-table">
+      <thead><tr><th>申請日時</th><th>ユーザー</th><th>金額</th><th>結果</th><th>処理日時</th></tr></thead>
+      <tbody>
+        ${done.map((r) => `
+          <tr>
+            <td>${when(r.requested_at)}</td>
+            <td>${escapeHtml(r.username)}</td>
+            <td>${formatTopupAmount(r)}</td>
+            <td>${r.status === 'APPROVED' ? '承認' : '却下'}</td>
+            <td>${when(r.decided_at)}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : '<div class="empty-hint">処理済みの申請はありません</div>'}
+  `;
+
+  panel.querySelectorAll('[data-decide]').forEach((btn) => btn.addEventListener('click', async () => {
+    const id = btn.closest('tr').dataset.reqId;
+    const status = btn.dataset.decide;
+    const r = pending.find((x) => x.id === id);
+    const verb = status === 'APPROVED' ? '承認' : '却下';
+    if (!confirm(`${r.username} の ${formatTopupAmount(r)} の申請を${verb}しますか？`)) return;
+    btn.disabled = true;
+    try {
+      await api(`/admin/cash-topup-requests/${id}`, { method: 'PATCH', body: { status } });
+      toast(`${verb}しました`);
+    } catch (e) {
+      toast(`失敗しました: ${e.message}`);
+    }
+    renderTopupRequests();
+  }));
+}

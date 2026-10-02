@@ -99,6 +99,7 @@ function render() {
     <main id="main"></main>
     <nav class="tab-bar">
       ${tabButton('home', '🏠', 'ホーム')}
+      ${tabButton('mypage', '📊', 'マイページ')}
       ${tabButton('order', '➕', '注文')}
       ${tabButton('history', '📜', '履歴')}
       ${tabButton('fx', '💱', '両替')}
@@ -135,10 +136,166 @@ async function renderMain() {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="empty-hint">読み込み中...</div>`;
   if (state.tab === 'home') return renderHome(main);
+  if (state.tab === 'mypage') return renderMypage(main);
   if (state.tab === 'order') return renderOrder(main);
   if (state.tab === 'history') return renderHistory(main);
   if (state.tab === 'fx') return renderFx(main);
   if (state.tab === 'settings') return renderSettings(main);
+}
+
+// ---------- 共通ヘルパー ----------
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function formatUnixDateTime(sec) {
+  return new Date(sec * 1000).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+// ---------- マイページ（仕様書7.4） ----------
+const mypageState = { metric: 'total' };
+
+const MYPAGE_METRICS = {
+  total: { label: '総資産', key: 'total_assets_jpy_c', fmt: yen },
+  valuation: { label: '評価額', key: 'valuation_jpy_c', fmt: yen },
+  cash_jpy: { label: '現金(円)', key: 'cash_jpy_c', fmt: yen },
+  cash_usd: { label: '現金(ドル)', key: 'cash_usd_c', fmt: usd },
+};
+
+function renderLineChart(points, fmt) {
+  if (!points.length) return '<div class="empty-hint">まだデータがありません</div>';
+  const W = 320, H = 150, padX = 10, padY = 14;
+  const vs = points.map((p) => p.v);
+  let min = Math.min(...vs);
+  let max = Math.max(...vs);
+  if (min === max) { min -= 1; max += 1; }
+  const x = (i) => (points.length === 1 ? W / 2 : padX + ((W - padX * 2) * i) / (points.length - 1));
+  const y = (v) => padY + (H - padY * 2) * (1 - (v - min) / (max - min));
+  const line = points.map((p, i) => `${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+  const area = `${x(0).toFixed(1)},${H - padY} ${line} ${x(points.length - 1).toFixed(1)},${H - padY}`;
+  const last = points[points.length - 1];
+  return `
+    <svg class="line-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="推移グラフ">
+      ${points.length > 1 ? `<polygon points="${area}" class="chart-area"></polygon>` : ''}
+      ${points.length > 1 ? `<polyline points="${line}" class="chart-line" fill="none"></polyline>` : ''}
+      <circle cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.v).toFixed(1)}" r="3.5" class="chart-dot"></circle>
+    </svg>
+    <div class="chart-meta">
+      <span>${points[0].date}</span>
+      <span>最高 ${fmt(Math.max(...vs))} / 最低 ${fmt(Math.min(...vs))}</span>
+      <span>${last.date}</span>
+    </div>
+    ${points.length < 2 ? '<div class="empty-hint">日次の記録が貯まると推移グラフになります（毎朝8:30 JSTに記録）</div>' : ''}
+  `;
+}
+
+async function renderMypage(main) {
+  let d;
+  try {
+    d = await api('/mypage');
+  } catch (e) {
+    main.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    return;
+  }
+
+  const pnl = d.unrealized_pnl_jpy_c;
+  const pnlPct = d.cost_jpy_c > 0 ? (pnl / d.cost_jpy_c) * 100 : null;
+  const pnlCls = pnl > 0 ? 'up' : pnl < 0 ? 'down' : '';
+  const sign = pnl > 0 ? '+' : '';
+
+  main.innerHTML = `
+    <div class="section">
+      <div class="asset-card">
+        <div class="asset-label">総資産（円換算）</div>
+        <div class="asset-total">${d.total_assets_jpy_c == null ? '--' : yen(d.total_assets_jpy_c)}</div>
+        <div class="asset-pnl">
+          評価損益
+          <span class="pnl ${pnlCls}">${sign}${yen(pnl)}${pnlPct == null ? '' : `（${sign}${pnlPct.toFixed(2)}%）`}</span>
+        </div>
+      </div>
+      ${d.stale ? '<div class="empty-hint">一部の現在値・為替を取得できなかったため、取得価格などで概算しています。</div>' : ''}
+
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-label">現金（円）</div><div class="stat-value">${yen(d.cash_jpy_c)}</div></div>
+        <div class="stat"><div class="stat-label">現金（ドル）</div><div class="stat-value">${usd(d.cash_usd_c)}</div></div>
+        <div class="stat"><div class="stat-label">保有評価額</div><div class="stat-value">${yen(d.valuation_jpy_c)}</div></div>
+        <div class="stat"><div class="stat-label">USD/JPY</div><div class="stat-value">${d.usd_jpy == null ? '--' : d.usd_jpy.toFixed(2)}</div></div>
+      </div>
+
+      <div class="section-title">推移（日次）</div>
+      <div class="subtabs" id="mypage-metrics">
+        ${Object.entries(MYPAGE_METRICS).map(([k, m]) =>
+          `<button data-v="${k}" class="${mypageState.metric === k ? 'active' : ''}">${m.label}</button>`).join('')}
+      </div>
+      <div id="mypage-chart"></div>
+
+      <button class="btn btn-primary" id="topup-btn" style="margin-top:18px">現金の増額を申請する</button>
+    </div>
+  `;
+
+  const drawChart = () => {
+    const m = MYPAGE_METRICS[mypageState.metric];
+    const points = (d.snapshots || []).map((sn) => ({ date: sn.snapshot_date, v: sn[m.key] }));
+    document.getElementById('mypage-chart').innerHTML = renderLineChart(points, m.fmt);
+  };
+  drawChart();
+  main.querySelectorAll('#mypage-metrics button').forEach((b) => b.addEventListener('click', () => {
+    mypageState.metric = b.dataset.v;
+    main.querySelectorAll('#mypage-metrics button').forEach((x) => x.classList.toggle('active', x === b));
+    drawChart();
+  }));
+  document.getElementById('topup-btn').addEventListener('click', openTopupDialog);
+}
+
+// ---------- 現金増額申請（仕様書7.5） ----------
+function openTopupDialog() {
+  if (document.getElementById('modal-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'modal-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-title">現金の増額を申請</div>
+      <p class="modal-text">運営が承認すると、残高にその場で加算されます。承認までは残高は変わりません。</p>
+      <div class="form-group">
+        <label>通貨</label>
+        <select id="topup-currency"><option value="JPY">円 (JPY)</option><option value="USD">ドル (USD)</option></select>
+      </div>
+      <div class="form-group">
+        <label>金額</label>
+        <input type="number" id="topup-amount" min="1" step="1" inputmode="decimal">
+      </div>
+      <div class="form-group">
+        <label>理由・メモ（任意）</label>
+        <textarea id="topup-reason" rows="3" maxlength="500"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-outline" id="topup-cancel">キャンセル</button>
+        <button class="btn btn-primary" id="topup-submit">申請する</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById('topup-currency').addEventListener('change', (e) => {
+    document.getElementById('topup-amount').step = e.target.value === 'JPY' ? '1' : '0.01';
+  });
+  document.getElementById('topup-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('topup-submit').addEventListener('click', async (e) => {
+    const currency = document.getElementById('topup-currency').value;
+    const amount = parseFloat(document.getElementById('topup-amount').value);
+    const reason = document.getElementById('topup-reason').value;
+    if (!(amount > 0)) { toast('金額を入力してください'); return; }
+    e.target.disabled = true;
+    try {
+      await api('/cash-topup-requests', { method: 'POST', body: { currency, amount, reason } });
+      close();
+      toast('申請しました。承認をお待ちください');
+      historyState.sub = 'cash';
+    } catch (err) {
+      e.target.disabled = false;
+      toast(`申請に失敗しました: ${err.message}`);
+    }
+  });
 }
 
 // ---------- ホーム(ポートフォリオ) ----------
@@ -213,6 +370,80 @@ function startOrderFromHolding(market, code, side, heldQty) {
 function yenFromPrice(price, qty) { return '¥' + Math.round(price * qty).toLocaleString(); }
 function usdFromPrice(price, qty) { return '$' + (price * qty).toFixed(2); }
 
+// ---------- 指値有効期限カレンダー（仕様書7.2.2） ----------
+// ネイティブのdate inputは使わず、取引所現地日付で「当日〜14日先」だけ選べる自前カレンダーにする。
+// 範囲外の日付はクリック不可（サーバー側の isWithinExpiryRange と同じ条件をフロントでも守る）。
+const ORDER_EXPIRY_MAX_DAYS = 14;
+const calendarState = { year: 0, month: 0 }; // month: 0始まり
+
+function marketToday(market) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: market === 'JP' ? 'Asia/Tokyo' : 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+function addDaysStr(dateStr, n) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+function expiryRange(market) {
+  const min = marketToday(market);
+  return { min, max: addDaysStr(min, ORDER_EXPIRY_MAX_DAYS) };
+}
+function isExpiryInRange(dateStr, market) {
+  const { min, max } = expiryRange(market);
+  return dateStr >= min && dateStr <= max; // YYYY-MM-DD は文字列比較で日付順になる
+}
+
+function renderExpiryCalendar() {
+  const box = document.getElementById('expiry-calendar');
+  if (!box) return;
+  const { min, max } = expiryRange(orderState.market);
+  const { year, month } = calendarState;
+  const pad = (n) => String(n).padStart(2, '0');
+  const firstDow = new Date(Date.UTC(year, month, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const minYm = Number(min.slice(0, 4)) * 12 + Number(min.slice(5, 7)) - 1;
+  const maxYm = Number(max.slice(0, 4)) * 12 + Number(max.slice(5, 7)) - 1;
+  const curYm = year * 12 + month;
+
+  let cells = '';
+  for (let i = 0; i < firstDow; i++) cells += '<span class="cal-cell empty"></span>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const str = `${year}-${pad(month + 1)}-${pad(d)}`;
+    const ok = str >= min && str <= max;
+    const cls = ['cal-cell', ok ? 'ok' : 'disabled', str === orderState.expiresDate ? 'selected' : '', str === min ? 'today' : '']
+      .filter(Boolean).join(' ');
+    cells += `<button type="button" class="${cls}" data-date="${str}" ${ok ? '' : 'disabled'}>${d}</button>`;
+  }
+
+  box.innerHTML = `
+    <div class="cal-head">
+      <button type="button" class="cal-nav" id="cal-prev" ${curYm <= minYm ? 'disabled' : ''}>‹</button>
+      <span class="cal-title">${year}年${month + 1}月</span>
+      <button type="button" class="cal-nav" id="cal-next" ${curYm >= maxYm ? 'disabled' : ''}>›</button>
+    </div>
+    <div class="cal-grid cal-dow">${['日', '月', '火', '水', '木', '金', '土'].map((w) => `<span>${w}</span>`).join('')}</div>
+    <div class="cal-grid">${cells}</div>
+    <div class="cal-foot">選択できるのは ${min} 〜 ${max}（${orderState.market === 'JP' ? '東京' : 'ニューヨーク'}時間）</div>
+  `;
+  document.getElementById('cal-prev').addEventListener('click', () => {
+    const d = new Date(Date.UTC(year, month - 1, 1));
+    calendarState.year = d.getUTCFullYear(); calendarState.month = d.getUTCMonth();
+    renderExpiryCalendar();
+  });
+  document.getElementById('cal-next').addEventListener('click', () => {
+    const d = new Date(Date.UTC(year, month + 1, 1));
+    calendarState.year = d.getUTCFullYear(); calendarState.month = d.getUTCMonth();
+    renderExpiryCalendar();
+  });
+  box.querySelectorAll('.cal-cell.ok').forEach((b) => b.addEventListener('click', () => {
+    orderState.expiresDate = b.dataset.date;
+    document.getElementById('order-expires-text').textContent = orderState.expiresDate;
+    box.hidden = true;
+  }));
+}
+
 // ---------- 注文 ----------
 const orderState = {
   market: 'JP',
@@ -232,6 +463,11 @@ async function renderOrder(main) {
       const { symbols } = await api('/symbols');
       state.symbols = symbols || [];
     } catch { /* noop */ }
+  }
+
+  // 市場切替や日付またぎで範囲外になった有効期限は選び直させる
+  if (orderState.expiresDate && !isExpiryInRange(orderState.expiresDate, orderState.market)) {
+    orderState.expiresDate = '';
   }
 
   main.innerHTML = `
@@ -291,7 +527,11 @@ async function renderOrder(main) {
         </div>
         <div class="form-group">
           <label>有効期限（現地日付・最大2週間先）</label>
-          <input type="date" id="order-expires" value="${orderState.expiresDate}">
+          <button type="button" class="date-field" id="order-expires-btn">
+            <span id="order-expires-text">${orderState.expiresDate || '日付を選択'}</span>
+            <span class="date-field-icon">📅</span>
+          </button>
+          <div class="calendar" id="expiry-calendar" hidden></div>
         </div>
       </div>
 
@@ -349,8 +589,22 @@ async function renderOrder(main) {
 
   const targetPriceEl = document.getElementById('order-target-price');
   if (targetPriceEl) targetPriceEl.addEventListener('input', (e) => { orderState.targetPrice = e.target.value; });
-  const expiresEl = document.getElementById('order-expires');
-  if (expiresEl) expiresEl.addEventListener('input', (e) => { orderState.expiresDate = e.target.value; });
+  const expiresBtn = document.getElementById('order-expires-btn');
+  if (expiresBtn) {
+    expiresBtn.addEventListener('click', () => {
+      const box = document.getElementById('expiry-calendar');
+      if (box.hidden) {
+        const { min } = expiryRange(orderState.market);
+        const base = orderState.expiresDate || min;
+        calendarState.year = Number(base.slice(0, 4));
+        calendarState.month = Number(base.slice(5, 7)) - 1;
+        renderExpiryCalendar();
+        box.hidden = false;
+      } else {
+        box.hidden = true;
+      }
+    });
+  }
 
   document.getElementById('order-submit').addEventListener('click', submitOrder);
 }
@@ -433,6 +687,10 @@ async function submitOrder() {
         toast('指値価格と有効期限を入力してください');
         return;
       }
+      if (!isExpiryInRange(orderState.expiresDate, orderState.market)) {
+        toast(`有効期限は当日から${ORDER_EXPIRY_MAX_DAYS}日先までの日付を選んでください`);
+        return;
+      }
       await api('/orders/limit', {
         method: 'POST',
         body: {
@@ -461,6 +719,7 @@ async function renderHistory(main) {
         <button data-v="orders" class="${historyState.sub === 'orders' ? 'active' : ''}">注文</button>
         <button data-v="trades" class="${historyState.sub === 'trades' ? 'active' : ''}">取引</button>
         <button data-v="fx" class="${historyState.sub === 'fx' ? 'active' : ''}">両替</button>
+        <button data-v="cash" class="${historyState.sub === 'cash' ? 'active' : ''}">入出金</button>
       </div>
       <div id="history-list"><div class="empty-hint">読み込み中...</div></div>
     </div>
@@ -494,6 +753,18 @@ async function renderHistory(main) {
           ${t.profit_jpy_c != null ? `<div class="value ${t.profit_jpy_c >= 0 ? 'up' : 'down'}">${yen(t.profit_jpy_c)}</div>` : ''}
         </div>
       `).join('') : `<div class="empty-hint">取引履歴はありません</div>`;
+    } else if (historyState.sub === 'cash') {
+      const { requests } = await api('/cash-topup-requests');
+      const label = { PENDING: '承認待ち', APPROVED: '承認済み', REJECTED: '却下' };
+      list.innerHTML = requests.length ? requests.map((r) => `
+        <div class="list-row">
+          <div>
+            <div class="name">運営への入金申請 <span class="badge ${r.status}">${label[r.status] || r.status}</span></div>
+            <div class="sub">${formatUnixDateTime(r.requested_at)}${r.reason ? ` ・ ${escapeHtml(r.reason)}` : ''}</div>
+          </div>
+          <div class="value ${r.status === 'APPROVED' ? 'up' : ''}">${r.status === 'APPROVED' ? '+' : ''}${r.currency === 'JPY' ? yen(r.amount_c) : usd(r.amount_c)}</div>
+        </div>
+      `).join('') : `<div class="empty-hint">入出金の履歴はありません。マイページから増額を申請できます。</div>`;
     } else {
       const { transactions } = await api('/fx/transactions');
       list.innerHTML = transactions.length ? transactions.map((f) => `
@@ -605,7 +876,7 @@ function openDeleteAccountDialog() {
   overlay.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-title">アカウントを削除しますか？</div>
-      <p class="modal-text">保有銘柄・注文・取引履歴・両替履歴を含むすべてのデータが完全に削除され、元に戻せません。</p>
+      <p class="modal-text">アカウントは削除され、ログインできなくなります。この操作は取り消せません（同じユーザー名での再登録もできません）。</p>
       <div class="form-group">
         <label>確認のためパスワードを入力</label>
         <input type="password" id="delete-pass" autocomplete="current-password">

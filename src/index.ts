@@ -6,9 +6,12 @@ import portfolioRoutes from './routes/portfolio';
 import fxRoutes from './routes/fx';
 import adminRoutes from './routes/admin';
 import symbolsRoutes from './routes/symbols';
+import mypageRoutes from './routes/mypage';
+import cashTopupRoutes from './routes/cashTopup';
 import adminAuthRoutes from './routes/adminAuth';
 import { requireAuth } from './middleware/auth';
 import { syncSymbols } from './services/symbolSync';
+import { takeAssetSnapshots } from './services/snapshot';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -25,6 +28,8 @@ app.route('/api', authRoutes);
 app.route('/api', orderRoutes);
 app.route('/api', portfolioRoutes);
 app.route('/api', symbolsRoutes);
+app.route('/api', mypageRoutes);
+app.route('/api', cashTopupRoutes);
 app.route('/api/fx', fxRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/admin-auth', adminAuthRoutes);
@@ -186,6 +191,15 @@ export default {
           console.log('symbol sync completed', result.jpCount, result.usCount);
         }
       }),
+    );
+    // 仕様書7.4: 銘柄マスタ同期と同じタイミングで、全ユーザー分の日次資産スナップショットを記録する
+    ctx.waitUntil(
+      takeAssetSnapshots(env)
+        .then((r) => {
+          if (r.skipped) console.error('asset snapshot skipped:', r.skipped);
+          else console.log('asset snapshot completed', r.count);
+        })
+        .catch((e) => console.error('asset snapshot failed', e)),
     );
   },
 };

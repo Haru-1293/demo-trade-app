@@ -176,9 +176,10 @@ app.post('/account/password', requireCsrf, requireAuth, async (c) => {
 });
 
 /**
- * POST /api/account/delete — ログイン中ユーザー本人のアカウント削除（仕様書v0.2）
- * パスワード再入力必須。関連データ（保有・注文・両替・セッション等）をまとめて物理削除する。
- * 管理者アカウントは誤削除・監査ログの整合性保護のため、この経路では削除不可。
+ * POST /api/account/delete — ログイン中ユーザー本人のアカウント削除（仕様書7.1.4）
+ * パスワード再入力必須。管理者による抹消(4.5)と同じ扱いで status='DELETED' に更新し、全セッションを削除する。
+ * 保有株・取引履歴は監査目的で保持し、物理削除はしない。
+ * 管理者アカウントは誤削除防止のため、この経路では削除できない。
  */
 app.post('/account/delete', requireCsrf, requireAuth, async (c) => {
   const auth = c.get('auth');
@@ -197,16 +198,10 @@ app.post('/account/delete', requireCsrf, requireAuth, async (c) => {
   if (!ok) return c.json({ error: 'password incorrect' }, 400);
 
   const uid = auth.userId;
-  // 外部キー制約のため子テーブル→usersの順に、1バッチ(トランザクション)で削除する
   await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE users SET status = 'DELETED', updated_at = ? WHERE id = ?`)
+      .bind(Math.floor(Date.now() / 1000), uid),
     c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(uid),
-    c.env.DB.prepare(`DELETE FROM admin_sessions WHERE user_id = ?`).bind(uid),
-    c.env.DB.prepare(`DELETE FROM webauthn_credentials WHERE user_id = ?`).bind(uid),
-    c.env.DB.prepare(`DELETE FROM admin_audit_log WHERE target_user_id = ?`).bind(uid),
-    c.env.DB.prepare(`DELETE FROM fx_transactions WHERE user_id = ?`).bind(uid),
-    c.env.DB.prepare(`DELETE FROM orders WHERE user_id = ?`).bind(uid),
-    c.env.DB.prepare(`DELETE FROM trades WHERE user_id = ?`).bind(uid),
-    c.env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(uid),
   ]);
 
   const cookieName = c.env.SESSION_COOKIE_NAME || 'session';

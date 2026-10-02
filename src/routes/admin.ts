@@ -255,4 +255,85 @@ app.patch('/symbols/:market/:code', requireAdminCsrf, async (c) => {
   return c.json({ ok: true });
 });
 
+
+/**
+ * GET /api/admin/cash-topup-requests?status=PENDING|APPROVED|REJECTED|ALL — 現金増額申請の一覧（仕様書7.5）
+ * 既定は承認待ち(PENDING)。申請の古い順に返す。
+ */
+app.get('/cash-topup-requests', async (c) => {
+  const status = c.req.query('status') ?? 'PENDING';
+  const filter = ['PENDING', 'APPROVED', 'REJECTED'].includes(status) ? status : null;
+  const sql = `SELECT r.id, r.user_id, u.username, r.currency, r.amount_c, r.reason, r.status,
+                      r.requested_at, r.decided_at
+               FROM cash_topup_requests r JOIN users u ON u.id = r.user_id
+               ${filter ? 'WHERE r.status = ?' : ''}
+               ORDER BY ${filter === 'PENDING' ? 'r.requested_at ASC' : 'r.requested_at DESC'}
+               LIMIT 200`;
+  const stmt = c.env.DB.prepare(sql);
+  const { results } = await (filter ? stmt.bind(filter) : stmt).all();
+  return c.json({ requests: results });
+});
+
+/**
+ * PATCH /api/admin/cash-topup-requests/:id — 承認/却下（仕様書7.5）
+ * 承認時は残高加算・申請ステータス更新・監査ログを1バッチで行う。
+ * どの文も「申請がPENDINGであること」を条件にしているため、二重承認しても二重加算されない。
+ */
+app.patch('/cash-topup-requests/:id', requireAdminCsrf, async (c) => {
+  const adminAuth = c.get('adminAuth');
+  const id = c.req.param('id');
+  const body = await c.req.json<{ status: 'APPROVED' | 'REJECTED' }>().catch(() => null);
+  if (!body || (body.status !== 'APPROVED' && body.status !== 'REJECTED')) {
+    return c.json({ error: 'status must be APPROVED or REJECTED' }, 400);
+  }
+
+  const req = await c.env.DB.prepare(
+    `SELECT r.id, r.user_id, r.currency, r.amount_c, r.status, u.status AS user_status
+     FROM cash_topup_requests r JOIN users u ON u.id = r.user_id WHERE r.id = ?`,
+  )
+    .bind(id)
+    .first<{ id: string; user_id: string; currency: 'JPY' | 'USD'; amount_c: number; status: string; user_status: string }>();
+  if (!req) return c.json({ error: 'not found' }, 404);
+  if (req.status !== 'PENDING') return c.json({ error: 'すでに処理済みの申請です' }, 409);
+  if (body.status === 'APPROVED' && req.user_status !== 'ACTIVE') {
+    return c.json({ error: '対象ユーザーが有効ではないため承認できません' }, 400);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const pendingExists = `EXISTS (SELECT 1 FROM cash_topup_requests WHERE id = ? AND status = 'PENDING')`;
+  const stmts: D1PreparedStatement[] = [];
+
+  if (body.status === 'APPROVED') {
+    const column = req.currency === 'JPY' ? 'cash_balance_jpy_c' : 'cash_balance_usd_c';
+    stmts.push(
+      c.env.DB.prepare(
+        `UPDATE users SET ${column} = ${column} + ?, updated_at = ? WHERE id = ? AND ${pendingExists}`,
+      ).bind(req.amount_c, now, req.user_id, id),
+    );
+  }
+  stmts.push(
+    c.env.DB.prepare(
+      `INSERT INTO admin_audit_log (id, admin_user_id, target_user_id, action, before_value, after_value, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${pendingExists}`,
+    ).bind(
+      crypto.randomUUID(),
+      adminAuth.userId,
+      req.user_id,
+      body.status === 'APPROVED' ? 'CASH_TOPUP_APPROVE' : 'CASH_TOPUP_REJECT',
+      JSON.stringify({ request_id: id, status: 'PENDING' }),
+      JSON.stringify({ request_id: id, status: body.status, currency: req.currency, amount_c: req.amount_c }),
+      now,
+      id,
+    ),
+    c.env.DB.prepare(
+      `UPDATE cash_topup_requests SET status = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = 'PENDING'`,
+    ).bind(body.status, now, adminAuth.userId, id),
+  );
+
+  const results = await c.env.DB.batch(stmts);
+  const last = results[results.length - 1];
+  if ((last?.meta.changes ?? 0) === 0) return c.json({ error: 'すでに処理済みの申請です' }, 409);
+  return c.json({ ok: true });
+});
+
 export default app;
