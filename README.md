@@ -60,7 +60,7 @@ Cloudflareダッシュボード側での設定が別途必要なもの:
 ## ディレクトリ構成
 
 ```
-migrations/       D1マイグレーションSQL（0001〜0008、詳細はファイル名・コメント参照）
+migrations/       D1マイグレーションSQL（0001〜0011、詳細はファイル名・コメント参照）
 src/
   index.ts        Honoルーティングのエントリポイント + Cronトリガー(scheduled)
   middleware/      認証・CSRF・レート制限（通常アプリ用 / admin用は別ファイル）
