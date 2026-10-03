@@ -3,7 +3,7 @@
 
 const state = {
   tab: 'home',
-  symbols: [],
+  prevTab: 'home', // 検索画面から戻る先
   portfolio: [],
   orders: [],
   trades: [],
@@ -78,6 +78,8 @@ function render() {
     return;
   }
   removeTurnstile();
+  // 銘柄インデックス（IndexedDB）を初期化。初回のみ全件取得、以降は手元のデータを使い12時間ごとに裏で更新
+  SymbolIndex.init(() => api('/symbols')).catch(() => { /* 失敗時は検索画面・注文画面側で案内 */ });
   app.innerHTML = `
     <header class="app-header">
       <h1>デモトレード</h1>
@@ -126,7 +128,8 @@ function initMarketTicker() {
 }
 
 function tabButton(tab, icon, label) {
-  const active = state.tab === tab ? 'active' : '';
+  const current = state.tab === 'search' ? 'home' : state.tab;
+  const active = current === tab ? 'active' : '';
   return `<button class="tab-item ${active}" data-tab="${tab}">
     <span class="icon">${icon}</span><span>${label}</span>
   </button>`;
@@ -135,6 +138,8 @@ function tabButton(tab, icon, label) {
 async function renderMain() {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="empty-hint">読み込み中...</div>`;
+  if (state.tab !== 'search') clearSearchLive(); // 検索画面を離れたら検索結果分のライブ購読を解除
+  if (state.tab === 'search') return renderSearch(main);
   if (state.tab === 'home') return renderHome(main);
   if (state.tab === 'mypage') return renderMypage(main);
   if (state.tab === 'order') return renderOrder(main);
@@ -298,6 +303,182 @@ function openTopupDialog() {
   });
 }
 
+// ---------- 銘柄検索画面（仕様書7.3.2。検索はクライアントのIndexedDBインデックス） ----------
+const SEARCH_PAGE = 30;
+const SEARCH_MAX = 300;
+const searchState = { q: '', market: 'ALL', limit: SEARCH_PAGE };
+let searchLiveSymbols = new Set();
+let searchDebounce = null;
+let searchIndexUnsub = null;
+
+function openSearch() {
+  if (state.tab !== 'search') state.prevTab = state.tab;
+  state.tab = 'search';
+  render();
+}
+
+function clearSearchLive() {
+  if (searchIndexUnsub) { searchIndexUnsub(); searchIndexUnsub = null; }
+  clearTimeout(searchDebounce);
+  if (searchLiveSymbols.size) unsubscribeLive([...searchLiveSymbols]);
+  searchLiveSymbols = new Set();
+}
+
+function renderSearch(main) {
+  main.innerHTML = `
+    <div class="search-screen">
+      <div class="search-bar">
+        <button type="button" class="search-back" id="search-back" aria-label="戻る">‹</button>
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="search" id="search-input" placeholder="銘柄名・ティッカー・証券コード" autocomplete="off" value="${escapeHtml(searchState.q)}">
+          <button type="button" class="search-clear" id="search-clear" aria-label="クリア" ${searchState.q ? '' : 'hidden'}>✕</button>
+        </div>
+      </div>
+      <div class="chips" id="search-market">
+        ${[['ALL', 'すべて'], ['JP', '日本株'], ['US', '米国株']].map(([v, l]) =>
+          `<button type="button" data-v="${v}" class="chip ${searchState.market === v ? 'active' : ''}">${l}</button>`).join('')}
+      </div>
+      <div id="search-results"></div>
+      <div class="search-foot" id="search-foot"></div>
+    </div>
+  `;
+  const input = document.getElementById('search-input');
+  const clearBtn = document.getElementById('search-clear');
+
+  document.getElementById('search-back').addEventListener('click', () => {
+    state.tab = state.prevTab && state.prevTab !== 'search' ? state.prevTab : 'home';
+    render();
+  });
+  input.addEventListener('input', () => {
+    clearBtn.hidden = !input.value;
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      searchState.q = input.value;
+      searchState.limit = SEARCH_PAGE;
+      drawSearchResults();
+    }, 80);
+  });
+  clearBtn.addEventListener('click', () => {
+    input.value = '';
+    clearBtn.hidden = true;
+    searchState.q = '';
+    searchState.limit = SEARCH_PAGE;
+    drawSearchResults();
+    input.focus();
+  });
+  main.querySelectorAll('#search-market .chip').forEach((b) => b.addEventListener('click', () => {
+    searchState.market = b.dataset.v;
+    searchState.limit = SEARCH_PAGE;
+    main.querySelectorAll('#search-market .chip').forEach((x) => x.classList.toggle('active', x === b));
+    drawSearchResults();
+  }));
+
+  // 銘柄データの読み込み完了・更新に合わせて再描画
+  if (searchIndexUnsub) searchIndexUnsub();
+  searchIndexUnsub = SymbolIndex.subscribe(() => { if (state.tab === 'search') drawSearchResults(); });
+  SymbolIndex.init(() => api('/symbols')).catch(() => {});
+
+  drawSearchResults();
+  if (!searchState.q) input.focus();
+}
+
+function drawSearchResults() {
+  const box = document.getElementById('search-results');
+  const foot = document.getElementById('search-foot');
+  if (!box || !foot) return; // 画面遷移済み
+  const st = SymbolIndex.getStatus();
+
+  const footInfo = st.count
+    ? `銘柄データ ${st.count.toLocaleString()}件${st.updatedAt ? `（${formatUnixDateTime(Math.floor(st.updatedAt / 1000))} 取得）` : ''} <button type="button" class="link-btn" id="search-refresh">更新</button>`
+    : '';
+  const bindRefresh = () => {
+    const btn = document.getElementById('search-refresh');
+    if (btn) btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      await SymbolIndex.refresh(true);
+      toast(SymbolIndex.getStatus().error ? '更新に失敗しました' : '銘柄データを更新しました');
+    });
+  };
+
+  if (st.state !== 'ready') {
+    syncSearchLive([]);
+    box.innerHTML = st.state === 'error'
+      ? `<div class="empty-hint">銘柄データを取得できませんでした（${escapeHtml(st.error || '')}）<br><button type="button" class="btn btn-outline" id="search-retry" style="margin-top:10px">再試行</button></div>`
+      : '<div class="empty-hint">銘柄データを読み込み中…（初回のみ数秒かかります）</div>';
+    foot.innerHTML = '';
+    const retry = document.getElementById('search-retry');
+    if (retry) retry.addEventListener('click', () => SymbolIndex.refresh(true));
+    return;
+  }
+
+  const q = searchState.q.trim();
+  if (!q) {
+    syncSearchLive([]);
+    box.innerHTML = '<div class="empty-hint">銘柄名（例: トヨタ）、ティッカー（例: AAPL）、証券コード（例: 7203）で検索できます。ひらがな・全角でも検索できます。</div>';
+    foot.innerHTML = footInfo;
+    bindRefresh();
+    return;
+  }
+
+  const market = searchState.market === 'ALL' ? null : searchState.market;
+  const { results, total } = SymbolIndex.search(q, { limit: searchState.limit, market });
+  if (!results.length) {
+    syncSearchLive([]);
+    box.innerHTML = '<div class="empty-hint">該当する銘柄がありません</div>';
+    foot.innerHTML = footInfo;
+    bindRefresh();
+    return;
+  }
+
+  box.innerHTML = results.map((r) => `
+    <div class="list-row search-row">
+      <div class="search-main">
+        <div class="name">${escapeHtml(r.name)}</div>
+        <div class="sub">${escapeHtml(r.code)} ・ ${escapeHtml(r.symbol)} ・ ${MARKET_LABEL[r.market] || r.market}</div>
+        <div class="row-actions">
+          <button type="button" class="row-action-btn buy" data-act="BUY" data-market="${r.market}" data-code="${escapeHtml(r.code)}">買い</button>
+          <button type="button" class="row-action-btn sell" data-act="SELL" data-market="${r.market}" data-code="${escapeHtml(r.code)}">売り</button>
+        </div>
+      </div>
+      <div class="value">
+        <span data-live-symbol="${escapeHtml(r.symbol)}" data-live-format="quote" data-currency="${r.currency}">--</span>
+        <span class="live-dot" data-live-dot="${escapeHtml(r.symbol)}" title="ライブ未接続">●</span>
+      </div>
+    </div>`).join('');
+  box.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
+    startOrderFromHolding(b.dataset.market, b.dataset.code, b.dataset.act, 0);
+  }));
+
+  const more = total > results.length && searchState.limit < SEARCH_MAX;
+  foot.innerHTML = `
+    <div>${total.toLocaleString()}件中 ${results.length.toLocaleString()}件を表示</div>
+    ${more ? '<button type="button" class="btn btn-outline" id="search-more" style="margin:10px 0">さらに表示</button>' : ''}
+    ${total > SEARCH_MAX && searchState.limit >= SEARCH_MAX ? '<div>件数が多いため、キーワードを足して絞り込んでください</div>' : ''}
+    <div style="margin-top:6px">${footInfo}</div>`;
+  const moreBtn = document.getElementById('search-more');
+  if (moreBtn) moreBtn.addEventListener('click', () => {
+    searchState.limit = Math.min(SEARCH_MAX, searchState.limit + SEARCH_PAGE);
+    drawSearchResults();
+  });
+  bindRefresh();
+
+  syncSearchLive(results.map((r) => r.symbol));
+  results.forEach((r) => applyLivePriceToDom(r.symbol));
+}
+
+// 検索結果に出ている銘柄だけをライブ購読する（結果が変わったら不要になった分を解除）
+function syncSearchLive(symbols) {
+  const next = new Set(symbols);
+  const gone = [...searchLiveSymbols].filter((x) => !next.has(x));
+  if (gone.length) unsubscribeLive(gone);
+  searchLiveSymbols = next;
+  if (next.size) {
+    connectLiveFeed();
+    subscribeLive([...next]);
+  }
+}
+
 // ---------- ホーム(ポートフォリオ) ----------
 async function renderHome(main) {
   try {
@@ -332,10 +513,14 @@ async function renderHome(main) {
 
   main.innerHTML = `
     <div class="section">
+      <button type="button" class="search-pill" id="home-search-btn">
+        <span class="search-icon">🔍</span><span>銘柄を検索（名前・ティッカー・証券コード）</span>
+      </button>
       <div class="section-title">保有銘柄</div>
       ${rows}
     </div>
   `;
+  document.getElementById('home-search-btn').addEventListener('click', openSearch);
 
   main.querySelectorAll('[data-holding-action]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -352,7 +537,7 @@ async function renderHome(main) {
 }
 // 保有銘柄から注文タブへ遷移し、銘柄・売買方向を事前セットする
 function startOrderFromHolding(market, code, side, heldQty) {
-  const sym = state.symbols.find((x) => x.market === market && x.code === code);
+  const sym = SymbolIndex.get(market, code);
   const unit = sym && sym.unit_size ? sym.unit_size : (market === 'JP' ? 100 : 1);
   orderState.market = market;
   orderState.code = code;
@@ -458,13 +643,6 @@ const orderState = {
 };
 
 async function renderOrder(main) {
-  if (!state.symbols.length) {
-    try {
-      const { symbols } = await api('/symbols');
-      state.symbols = symbols || [];
-    } catch { /* noop */ }
-  }
-
   // 市場切替や日付またぎで範囲外になった有効期限は選び直させる
   if (orderState.expiresDate && !isExpiryInRange(orderState.expiresDate, orderState.market)) {
     orderState.expiresDate = '';
@@ -477,13 +655,10 @@ async function renderOrder(main) {
         <button data-v="US" class="${orderState.market === 'US' ? 'active' : ''}">米国株</button>
       </div>
 
-      <div class="form-group">
-        <label>銘柄コード</label>
-        <input type="text" id="order-code" list="symbol-list" placeholder="例: 7203 / MSFT" value="${orderState.code}">
-        <datalist id="symbol-list">
-          ${state.symbols.filter((s) => s.market === orderState.market)
-            .map((s) => `<option value="${s.code}">${s.name}</option>`).join('')}
-        </datalist>
+      <div class="form-group symbol-field">
+        <label>銘柄（名前・ティッカー・コードで検索）</label>
+        <input type="text" id="order-code" autocomplete="off" placeholder="例: トヨタ / 7203 / MSFT" value="${escapeHtml(orderState.code)}">
+        <div class="suggest" id="symbol-suggest" hidden></div>
       </div>
 
       <div class="form-group" id="order-price-preview" style="display:none">
@@ -566,11 +741,25 @@ async function renderOrder(main) {
       b.addEventListener('click', () => { orderState.settlementCurrency = b.dataset.v; renderOrder(main); }));
   }
 
-  document.getElementById('order-code').addEventListener('input', (e) => {
+  const codeEl = document.getElementById('order-code');
+  codeEl.addEventListener('input', (e) => {
     orderState.code = e.target.value.trim().toUpperCase();
     updateQtyHint();
-    scheduleSymbolResolve();
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(() => showSymbolSuggest(e.target.value), 80);
   });
+  codeEl.addEventListener('focus', (e) => {
+    if (e.target.value.trim() && !findSymbol()) showSymbolSuggest(e.target.value);
+  });
+  // 候補リストの外をタップしたら閉じる（再描画のたびに付け替える）
+  if (suggestOutsideHandler) document.removeEventListener('click', suggestOutsideHandler);
+  suggestOutsideHandler = (e) => {
+    if (!e.target.closest('.symbol-field')) {
+      const box = document.getElementById('symbol-suggest');
+      if (box) box.hidden = true;
+    }
+  };
+  document.addEventListener('click', suggestOutsideHandler);
   document.getElementById('order-qty').addEventListener('input', (e) => {
     orderState.quantity = Math.max(1, parseInt(e.target.value || '1', 10));
   });
@@ -585,7 +774,8 @@ async function renderOrder(main) {
     orderState.quantity = (Math.floor(orderState.quantity / step) + 1) * step;
     document.getElementById('order-qty').value = orderState.quantity;
   });
-  scheduleSymbolResolve(0);
+  // 銘柄データの読み込みが後から終わった場合も、単元・銘柄名の表示を更新する
+  SymbolIndex.init(() => api('/symbols')).then(() => updateQtyHint()).catch(() => updateQtyHint());
 
   const targetPriceEl = document.getElementById('order-target-price');
   if (targetPriceEl) targetPriceEl.addEventListener('input', (e) => { orderState.targetPrice = e.target.value; });
@@ -610,10 +800,10 @@ async function renderOrder(main) {
 }
 
 function findSymbol() {
-  return state.symbols.find((s) => s.market === orderState.market && s.code === orderState.code);
+  return SymbolIndex.get(orderState.market, orderState.code);
 }
 
-// 1回の注文単位。銘柄が未解決の間も、日本株は既定100株で動かす（米国株は1株）。
+// 1回の注文単位。銘柄が見つからない間も、日本株は既定100株で動かす（米国株は1株）。
 function getUnitStep() {
   const sym = findSymbol();
   const u = sym ? Number(sym.unit_size) : 0;
@@ -621,31 +811,69 @@ function getUnitStep() {
   return orderState.market === 'JP' ? 100 : 1;
 }
 
-// 銘柄一覧の全件プリロードに依存せず、入力中のコードをサーバーで完全一致検索して補完する
-let symbolResolveTimer = null;
-function scheduleSymbolResolve(delay = 250) {
-  clearTimeout(symbolResolveTimer);
-  symbolResolveTimer = setTimeout(resolveSymbol, delay);
+// ---------- 銘柄サジェスト（注文画面。検索はクライアントのIndexedDBインデックスで行う） ----------
+let suggestTimer = null;
+let suggestOutsideHandler = null;
+
+const MARKET_LABEL = { JP: '日本株', US: '米国株' };
+
+function showSymbolSuggest(text) {
+  const box = document.getElementById('symbol-suggest');
+  if (!box) return;
+  const q = (text || '').trim();
+  if (!q) { box.hidden = true; return; }
+  const st = SymbolIndex.getStatus();
+  if (st.state !== 'ready') {
+    box.innerHTML = `<div class="suggest-empty">${st.state === 'error' ? '銘柄データを取得できませんでした' : '銘柄データを読み込み中…'}</div>`;
+    box.hidden = false;
+    return;
+  }
+  const { results, total } = SymbolIndex.search(q, { limit: 12 });
+  if (!results.length) {
+    box.innerHTML = '<div class="suggest-empty">該当する銘柄がありません</div>';
+    box.hidden = false;
+    return;
+  }
+  box.innerHTML = results.map((r) => `
+    <button type="button" class="suggest-item" data-market="${r.market}" data-code="${escapeHtml(r.code)}">
+      <span class="suggest-name">${escapeHtml(r.name)}</span>
+      <span class="suggest-sub">${escapeHtml(r.code)} ・ ${escapeHtml(r.symbol)} ・ ${MARKET_LABEL[r.market] || r.market}</span>
+    </button>`).join('') + (total > results.length ? `<div class="suggest-more">ほか ${total - results.length} 件（絞り込んでください）</div>` : '');
+  box.hidden = false;
+  box.querySelectorAll('.suggest-item').forEach((b) => b.addEventListener('click', () => {
+    const sym = SymbolIndex.get(b.dataset.market, b.dataset.code);
+    if (sym) selectSymbolForOrder(sym);
+  }));
 }
-async function resolveSymbol() {
-  const { market, code } = orderState;
-  if (!code || findSymbol()) { updateQtyHint(); return; }
-  try {
-    const { symbols } = await api(`/symbols?market=${encodeURIComponent(market)}&code=${encodeURIComponent(code)}`);
-    for (const sym of symbols || []) {
-      if (!state.symbols.some((x) => x.market === sym.market && x.code === sym.code)) state.symbols.push(sym);
-    }
-  } catch { /* noop */ }
-  // 応答待ちの間に入力が変わっていたら反映しない
-  if (orderState.market === market && orderState.code === code) updateQtyHint();
+
+function selectSymbolForOrder(sym) {
+  const marketChanged = orderState.market !== sym.market;
+  orderState.market = sym.market;
+  orderState.code = sym.code;
+  const box = document.getElementById('symbol-suggest');
+  if (box) box.hidden = true;
+  if (marketChanged) {
+    // 市場が変わると米国株の円貨決済欄・指値期限の現地日付などが変わるため、画面ごと描き直す
+    orderState.settlementCurrency = 'NATIVE';
+    renderOrder(document.getElementById('main'));
+  } else {
+    document.getElementById('order-code').value = sym.code;
+    updateQtyHint();
+  }
 }
+
 function updateQtyHint() {
   const hint = document.getElementById('qty-hint');
   if (!hint) return;
   const sym = findSymbol();
+  const st = SymbolIndex.getStatus();
   hint.textContent = sym
-    ? `単元: ${sym.unit_size}株 / 通貨: ${sym.currency}`
-    : (orderState.code ? '銘柄を確認中…（見つからない場合はコードをご確認ください）' : '銘柄コードを入力してください');
+    ? `${sym.name}（${MARKET_LABEL[sym.market] || sym.market}） 単元: ${sym.unit_size}株 / 通貨: ${sym.currency}`
+    : !orderState.code
+      ? '銘柄名・ティッカー・コードを入力してください'
+      : st.state === 'ready'
+        ? '該当する銘柄が見つかりません。候補から選んでください'
+        : '銘柄データを読み込み中…';
   updateOrderPricePreview(sym);
 }
 
@@ -678,6 +906,10 @@ async function submitOrder() {
     // 米国株の買いのみ意味を持つ。他は'NATIVE'を送っても無視される（バックエンド側で検証）
     settlement_currency: orderState.settlementCurrency,
   };
+  if (SymbolIndex.getStatus().state === 'ready' && !findSymbol()) {
+    toast('銘柄を候補から選んでください');
+    return;
+  }
   try {
     if (orderState.orderType === 'MARKET') {
       await api('/orders/market', { method: 'POST', body });
@@ -1088,6 +1320,14 @@ function subscribeLive(symbols) {
   newOnes.forEach((s) => live.subscribed.add(s));
   if (!newOnes.length) return;
   if (live.ws && live.ws.readyState === WebSocket.OPEN) sendSubscribe(newOnes);
+}
+
+function unsubscribeLive(symbols) {
+  const gone = symbols.filter((s) => live.subscribed.delete(s));
+  if (!gone.length) return;
+  if (live.ws && live.ws.readyState === WebSocket.OPEN) {
+    try { live.ws.send(JSON.stringify({ unsubscribe: gone })); } catch { /* noop */ }
+  }
 }
 
 function sendSubscribe(symbols) {

@@ -5,25 +5,13 @@ import { requireAuth } from '../middleware/auth';
 const app = new Hono<{ Bindings: Env }>();
 
 /**
- * GET /api/symbols — 銘柄一覧（検索・注文フォーム用）
- * クエリ無し(全件)の場合のみ、KVで12時間キャッシュしてから配信する（銘柄同期はCronで日次実行のため）。
+ * GET /api/symbols — 銘柄一覧
+ * クエリ無し(全件)は、クライアントの銘柄インデックス(IndexedDB, public/symbol-index.js)が12時間ごとに取得する。
+ * KVで12時間キャッシュしてから配信する（銘柄同期はCronで日次実行のため）。
  * 検索クエリ付きの場合はD1へ直接問い合わせる（結果セットが小さく、都度最新であるべきため）。
  */
 app.get('/symbols', requireAuth, async (c) => {
   const q = c.req.query('q');
-
-  // 市場+コードの完全一致検索（注文画面の単元取得用。全件プリロードに依存しない）
-  const exactMarket = c.req.query('market');
-  const exactCode = c.req.query('code');
-  if (exactCode && (exactMarket === 'JP' || exactMarket === 'US')) {
-    const { results } = await c.env.DB.prepare(
-      `SELECT code, market, symbol, name, currency, unit_size FROM symbols
-       WHERE active = 1 AND market = ? AND code = ? LIMIT 1`,
-    )
-      .bind(exactMarket, exactCode.toUpperCase())
-      .all();
-    return c.json({ symbols: results });
-  }
 
   if (!q) {
     const cacheKey = 'symbols_full_cache';
