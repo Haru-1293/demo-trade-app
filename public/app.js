@@ -202,28 +202,27 @@ async function renderMypage(main) {
     return;
   }
 
-  const pnl = d.unrealized_pnl_jpy_c;
-  const pnlPct = d.cost_jpy_c > 0 ? (pnl / d.cost_jpy_c) * 100 : null;
-  const pnlCls = pnl > 0 ? 'up' : pnl < 0 ? 'down' : '';
-  const sign = pnl > 0 ? '+' : '';
+  mypageData = d;
+  const pp = pnlParts(d.unrealized_pnl_jpy_c, d.cost_jpy_c);
 
   main.innerHTML = `
     <div class="section">
       <div class="asset-card">
         <div class="asset-label">総資産（円換算）</div>
-        <div class="asset-total">${d.total_assets_jpy_c == null ? '--' : yen(d.total_assets_jpy_c)}</div>
+        <div class="asset-total" id="mp-total">${d.total_assets_jpy_c == null ? '--' : yen(d.total_assets_jpy_c)}</div>
         <div class="asset-pnl">
           評価損益
-          <span class="pnl ${pnlCls}">${sign}${yen(pnl)}${pnlPct == null ? '' : `（${sign}${pnlPct.toFixed(2)}%）`}</span>
+          <span class="pnl ${pp.cls}" id="mp-pnl">${pp.text}</span>
         </div>
+        <div class="asset-note" id="mp-note"></div>
       </div>
       ${d.stale ? '<div class="empty-hint">一部の現在値・為替を取得できなかったため、取得価格などで概算しています。</div>' : ''}
 
       <div class="stat-grid">
         <div class="stat"><div class="stat-label">現金（円）</div><div class="stat-value">${yen(d.cash_jpy_c)}</div></div>
         <div class="stat"><div class="stat-label">現金（ドル）</div><div class="stat-value">${usd(d.cash_usd_c)}</div></div>
-        <div class="stat"><div class="stat-label">保有評価額</div><div class="stat-value">${yen(d.valuation_jpy_c)}</div></div>
-        <div class="stat"><div class="stat-label">USD/JPY</div><div class="stat-value">${d.usd_jpy == null ? '--' : d.usd_jpy.toFixed(2)}</div></div>
+        <div class="stat"><div class="stat-label">保有評価額</div><div class="stat-value" id="mp-valuation">${yen(d.valuation_jpy_c)}</div></div>
+        <div class="stat"><div class="stat-label">USD/JPY</div><div class="stat-value" id="mp-rate">${d.usd_jpy == null ? '--' : d.usd_jpy.toFixed(2)}</div></div>
       </div>
 
       <div class="section-title">推移（日次）</div>
@@ -249,6 +248,74 @@ async function renderMypage(main) {
     drawChart();
   }));
   document.getElementById('topup-btn').addEventListener('click', openTopupDialog);
+
+  // 保有銘柄はWSSを購読し、受信済み/受信したライブ価格で評価額を即時に更新する
+  // （サーバーから届いた値は30分キャッシュの価格。ライブ価格が無い銘柄だけこの値のまま）
+  const syms = (d.holdings || []).map((h) => h.symbol);
+  connectLiveFeed();
+  subscribeLive([...syms, 'JPY=X']);
+  recalcMypage();
+}
+
+let mypageData = null;
+let mypageRecalcQueued = false;
+
+function pnlParts(pnlC, costC) {
+  const pct = costC > 0 ? (pnlC / costC) * 100 : null;
+  const sign = pnlC > 0 ? '+' : '';
+  return {
+    cls: pnlC > 0 ? 'up' : pnlC < 0 ? 'down' : '',
+    text: `${sign}${yen(pnlC)}${pct == null ? '' : `（${sign}${pct.toFixed(2)}%）`}`,
+  };
+}
+
+function scheduleMypageRecalc() {
+  if (mypageRecalcQueued) return;
+  mypageRecalcQueued = true;
+  requestAnimationFrame(() => { mypageRecalcQueued = false; recalcMypage(); });
+}
+
+// サーバーの内訳(holdings)に、WSSで受信済みのライブ価格を当てはめて、総資産・評価額・評価損益を再計算する
+function recalcMypage() {
+  const d = mypageData;
+  if (!d || state.tab !== 'mypage' || !document.getElementById('mp-total')) return;
+  const liveRate = live.prices['JPY=X'];
+  const rate = typeof liveRate === 'number' ? liveRate : d.usd_jpy;
+  const holdings = d.holdings || [];
+
+  let valuation = 0;
+  let cost = 0;
+  let liveCount = 0;
+  let oldest = null;
+  for (const h of holdings) {
+    cost += h.cost_jpy_c;
+    const lp = live.prices[h.symbol];
+    if (typeof lp === 'number' && (h.market === 'JP' || rate != null)) {
+      valuation += Math.floor(lp * h.quantity * (h.market === 'US' ? rate : 1) * 100);
+      liveCount += 1;
+    } else {
+      valuation += h.valuation_jpy_c;
+      if (h.as_of && (oldest === null || h.as_of < oldest)) oldest = h.as_of;
+    }
+  }
+
+  if (rate != null) {
+    const total = d.cash_jpy_c + Math.floor(d.cash_usd_c * rate) + valuation;
+    document.getElementById('mp-total').textContent = yen(total);
+    document.getElementById('mp-rate').textContent = rate.toFixed(2);
+  }
+  document.getElementById('mp-valuation').textContent = yen(valuation);
+  const pp = pnlParts(valuation - cost, cost);
+  const pnlEl = document.getElementById('mp-pnl');
+  pnlEl.textContent = pp.text;
+  pnlEl.className = `pnl ${pp.cls}`;
+
+  const noteEl = document.getElementById('mp-note');
+  if (noteEl) {
+    if (!holdings.length) noteEl.textContent = '';
+    else if (liveCount === holdings.length) noteEl.textContent = 'ライブ価格で表示中';
+    else noteEl.textContent = `${liveCount}/${holdings.length}銘柄がライブ価格。残りは${oldest ? `${formatAsOf(oldest)}時点の` : '取得価格などの'}値`;
+  }
 }
 
 // ---------- 現金増額申請（仕様書7.5） ----------
@@ -310,6 +377,8 @@ const searchState = { q: '', market: 'ALL', limit: SEARCH_PAGE };
 let searchLiveSymbols = new Set();
 let searchDebounce = null;
 let searchIndexUnsub = null;
+let searchFallbackTimer = null;
+const SEARCH_FALLBACK_MAX = 15;
 
 function openSearch() {
   if (state.tab !== 'search') state.prevTab = state.tab;
@@ -320,6 +389,7 @@ function openSearch() {
 function clearSearchLive() {
   if (searchIndexUnsub) { searchIndexUnsub(); searchIndexUnsub = null; }
   clearTimeout(searchDebounce);
+  clearTimeout(searchFallbackTimer);
   if (searchLiveSymbols.size) unsubscribeLive([...searchLiveSymbols]);
   searchLiveSymbols = new Set();
 }
@@ -444,6 +514,7 @@ function drawSearchResults() {
       <div class="value">
         <span data-live-symbol="${escapeHtml(r.symbol)}" data-live-format="quote" data-currency="${r.currency}">--</span>
         <span class="live-dot" data-live-dot="${escapeHtml(r.symbol)}" title="ライブ未接続">●</span>
+        <div class="asof" data-asof="${escapeHtml(r.symbol)}"></div>
       </div>
     </div>`).join('');
   box.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
@@ -465,6 +536,10 @@ function drawSearchResults() {
 
   syncSearchLive(results.map((r) => r.symbol));
   results.forEach((r) => applyLivePriceToDom(r.symbol));
+  // 検索の打鍵ごとに外部取得が走らないよう、入力が落ち着いてから上位の銘柄だけ暫定価格を取得する
+  clearTimeout(searchFallbackTimer);
+  const topSymbols = results.slice(0, SEARCH_FALLBACK_MAX).map((r) => r.symbol);
+  searchFallbackTimer = setTimeout(() => ensureFallbackPrices(topSymbols), 500);
 }
 
 // 検索結果に出ている銘柄だけをライブ購読する（結果が変わったら不要になった分を解除）
@@ -496,7 +571,7 @@ async function renderHome(main) {
           <div class="name">${t.name} <span class="sub">${t.code}</span></div>
           <div class="sub">
             ${t.quantity}株 @ ${t.buy_price} (${t.buy_date})
-            ・現在値 <span data-live-symbol="${t.symbol}" data-buy-price="${t.buy_price}">${t.market === 'JP' ? '¥' : '$'}${t.buy_price}</span>
+            ・現在値 <span data-live-symbol="${t.symbol}" data-buy-price="${t.buy_price}">${t.market === 'JP' ? '¥' : '$'}${t.buy_price}</span><span class="asof" data-asof="${t.symbol}"></span>
             <span class="live-dot" data-live-dot="${t.symbol}" title="ライブ未接続">●</span>
           </div>
           <div class="row-actions">
@@ -533,6 +608,8 @@ async function renderHome(main) {
     subscribeLive(state.portfolio.map((t) => t.symbol));
     // 接続前に既にpriceを持っていれば即反映
     state.portfolio.forEach((t) => applyLivePriceToDom(t.symbol));
+    // WSSの初回tickが届くまでは、APIで取得した暫定価格を表示する
+    ensureFallbackPrices(state.portfolio.map((t) => t.symbol));
   }
 }
 // 保有銘柄から注文タブへ遷移し、銘柄・売買方向を事前セットする
@@ -663,7 +740,7 @@ async function renderOrder(main) {
 
       <div class="form-group" id="order-price-preview" style="display:none">
         <label>現在値（ライブ）</label>
-        <div class="ticker-value" id="order-price-preview-value" style="font-size:18px"></div>
+        <div><span class="ticker-value" id="order-price-preview-value" style="font-size:18px"></span><span class="asof" data-asof="" id="order-price-preview-asof"></span></div>
       </div>
 
       <div class="segmented buy-sell" id="side-seg">
@@ -890,10 +967,14 @@ function updateOrderPricePreview(sym) {
   valEl.dataset.liveSymbol = sym.symbol;
   valEl.dataset.liveFormat = 'quote';
   valEl.dataset.currency = sym.currency;
-  valEl.textContent = live.prices[sym.symbol] != null ? '' : '読み込み中...';
+  const known = typeof live.prices[sym.symbol] === 'number' || live.fallback[sym.symbol];
+  valEl.textContent = known ? '' : '読み込み中...';
+  const asofEl = document.getElementById('order-price-preview-asof');
+  if (asofEl) asofEl.dataset.asof = sym.symbol;
   connectLiveFeed();
   subscribeLive([sym.symbol]);
   applyLivePriceToDom(sym.symbol);
+  ensureFallbackPrices([sym.symbol]);
 }
 
 async function submitOrder() {
@@ -1256,7 +1337,8 @@ function resetTurnstileToken() {
 // 接続できない/切れても表示が静的な最終取得価格に留まるだけで、アプリの他機能には影響しない。
 const live = {
   ws: null,
-  prices: {}, // symbol -> price
+  prices: {}, // symbol -> price（WSSで受信したライブ価格）
+  fallback: {}, // symbol -> {price, asOf}（GET /api/prices で取得した暫定価格。WSSの初回tickが届くまでの表示用）
   subscribed: new Set(),
   reconnectAttempts: 0,
   manuallyClosed: false,
@@ -1342,11 +1424,21 @@ function setLiveDots(status) {
 }
 
 function applyLivePriceToDom(symbol, prevPrice) {
-  const price = live.prices[symbol];
+  // 表示する価格: WSSのライブ価格を優先し、まだ届いていなければ /api/prices の暫定価格を使う
+  const liveP = live.prices[symbol];
+  const fb = live.fallback[symbol];
+  const isLive = typeof liveP === 'number';
+  const price = isLive ? liveP : (fb ? fb.price : undefined);
   if (typeof price !== 'number') return;
 
   const dotEl = document.querySelector(`[data-live-dot="${cssEscape(symbol)}"]`);
-  if (dotEl) { dotEl.style.color = 'var(--primary)'; dotEl.title = 'ライブ接続中'; }
+  if (dotEl && isLive) { dotEl.style.color = 'var(--primary)'; dotEl.title = 'ライブ接続中'; }
+  if (dotEl && !isLive) dotEl.title = `ライブ待機中（${formatAsOf(fb.asOf)}時点の値を表示）`;
+
+  // 「○○時点」表示（暫定価格のときだけ。ライブ受信後は消す）
+  document.querySelectorAll(`[data-asof="${cssEscape(symbol)}"]`).forEach((el) => {
+    el.textContent = isLive ? '' : `（${formatAsOf(fb.asOf)}時点）`;
+  });
 
   // 同じsymbolの表示要素が複数ある場合（同一銘柄を複数ロット保有、ティッカーバー等）に
   // 全て更新できるようquerySelectorAllを使う
@@ -1355,7 +1447,7 @@ function applyLivePriceToDom(symbol, prevPrice) {
     if (format === 'rate' || format === 'index') {
       priceEl.textContent = price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     } else if (format === 'quote') {
-      // 注文画面の現在値プレビュー（表示専用、約定には使わない）
+      // 注文画面・検索画面の現在値（表示専用、約定には使わない）
       const cur = priceEl.dataset.currency;
       priceEl.textContent = (cur === 'USD' ? '$' : '¥') + price.toLocaleString(undefined, { maximumFractionDigits: 2 });
     } else {
@@ -1364,7 +1456,7 @@ function applyLivePriceToDom(symbol, prevPrice) {
       const market = valueEl ? valueEl.dataset.market : null;
       priceEl.textContent = (market === 'US' ? '$' : '¥') + price.toLocaleString(undefined, { maximumFractionDigits: 2 });
     }
-    if (prevPrice != null && price !== prevPrice) {
+    if (isLive && prevPrice != null && price !== prevPrice) {
       priceEl.classList.remove('flash-up', 'flash-down');
       void priceEl.offsetWidth; // reflow強制してアニメーションを再トリガー
       priceEl.classList.add(price > prevPrice ? 'flash-up' : 'flash-down');
@@ -1377,6 +1469,45 @@ function applyLivePriceToDom(symbol, prevPrice) {
     const market = valueEl.dataset.market;
     valueEl.textContent = market === 'US' ? usdFromPrice(price, qty) : yenFromPrice(price, qty);
   });
+
+  // マイページはWSSの受信分を評価額へ反映する
+  if (isLive && state.tab === 'mypage') scheduleMypageRecalc();
+}
+
+// 取得時刻の短い表記（当日なら HH:MM、それ以外は M/D HH:MM）
+function formatAsOf(sec) {
+  const d = new Date(sec * 1000);
+  const now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return d.toDateString() === now.toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+// WSSの初回tickが届くまでの暫定価格を取得して表示に反映する（サーバー側は30分KVキャッシュ）。
+// すでにライブ価格・暫定価格を持っている銘柄は取りに行かない。
+const fallbackInFlight = new Set();
+const fallbackMissAt = {};
+async function ensureFallbackPrices(symbols) {
+  const now = Date.now();
+  const need = [...new Set(symbols)].filter((sym) =>
+    sym && typeof live.prices[sym] !== 'number' && !live.fallback[sym] && !fallbackInFlight.has(sym)
+    && !(fallbackMissAt[sym] && now - fallbackMissAt[sym] < 5 * 60 * 1000)); // 取得失敗した銘柄は5分間は再取得しない
+  if (!need.length) return;
+  need.forEach((sym) => fallbackInFlight.add(sym));
+  const BATCH = 30; // サーバー側の1リクエスト上限
+  for (let i = 0; i < need.length; i += BATCH) {
+    const chunk = need.slice(i, i + BATCH);
+    try {
+      const { prices } = await api(`/prices?symbols=${encodeURIComponent(chunk.join(','))}`);
+      for (const [sym, p] of Object.entries(prices || {})) {
+        live.fallback[sym] = { price: p.price, asOf: p.as_of };
+      }
+    } catch { /* 取得できなくても表示が「--」のままになるだけ */ }
+    chunk.forEach((sym) => {
+      fallbackInFlight.delete(sym);
+      if (!live.fallback[sym]) fallbackMissAt[sym] = Date.now();
+    });
+    chunk.forEach((sym) => applyLivePriceToDom(sym));
+  }
 }
 
 function cssEscape(s) {

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { requireAuth } from '../middleware/auth';
-import { fetchPriceMap, fetchUsdJpy, valueHoldings, totalAssetsJpyC, type HoldLot } from '../services/valuation';
+import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, type HoldLot } from '../services/valuation';
 import { buildSnapshotStatement, snapshotDateJst } from '../services/snapshot';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -30,10 +30,7 @@ app.get('/mypage', requireAuth, async (c) => {
     .bind(auth.userId)
     .all<HoldLot>();
 
-  const [priceMap, usdJpy] = await Promise.all([
-    fetchPriceMap(c.env, lots.map((l) => l.symbol)),
-    fetchUsdJpy(c.env),
-  ]);
+  const { priceMap, usdJpy, usdJpyAsOf } = await fetchPricesAndRate(c.env, lots.map((l) => l.symbol));
   const v = valueHoldings(lots, priceMap, usdJpy);
   const total =
     usdJpy === null ? null : totalAssetsJpyC(user.cash_balance_jpy_c, user.cash_balance_usd_c, usdJpy, v.valuationJpyC);
@@ -66,6 +63,17 @@ app.get('/mypage', requireAuth, async (c) => {
     cash_jpy_c: user.cash_balance_jpy_c,
     cash_usd_c: user.cash_balance_usd_c,
     usd_jpy: usdJpy,
+    usd_jpy_as_of: usdJpyAsOf,
+    // 銘柄ごとの内訳。クライアントはWSSで受信済みのライブ価格があれば、これを使って評価額を再計算する
+    holdings: v.bySymbol.map((h) => ({
+      symbol: h.symbol,
+      market: h.market,
+      quantity: h.quantity,
+      cost_jpy_c: h.costJpyC,
+      valuation_jpy_c: h.valuationJpyC,
+      price: h.price,
+      as_of: h.asOf,
+    })),
     valuation_jpy_c: v.valuationJpyC,
     cost_jpy_c: v.costJpyC,
     unrealized_pnl_jpy_c: v.unrealizedJpyC,

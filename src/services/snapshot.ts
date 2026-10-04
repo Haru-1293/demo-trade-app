@@ -1,6 +1,6 @@
 import type { Env } from '../types';
 import { unixToLocalDateStr } from './timezone';
-import { fetchPriceMap, fetchUsdJpy, valueHoldings, totalAssetsJpyC, type HoldLot } from './valuation';
+import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, type HoldLot } from './valuation';
 
 /** 仕様書 7.4: スナップショットの日付基準はJST */
 export function snapshotDateJst(nowUnix: number): string {
@@ -52,12 +52,6 @@ export function buildSnapshotStatement(
 
 /** Cron用: 全ACTIVEユーザーの日次スナップショットを記録する */
 export async function takeAssetSnapshots(env: Env): Promise<{ count: number; skipped?: string }> {
-  const usdJpy = await fetchUsdJpy(env);
-  if (usdJpy === null) {
-    // 為替が取れないと円換算の総資産が出せないため、誤った値を残さず今回は見送る
-    return { count: 0, skipped: 'usd/jpy rate unavailable' };
-  }
-
   const { results: users } = await env.DB.prepare(
     `SELECT id, cash_balance_jpy_c, cash_balance_usd_c FROM users WHERE status = 'ACTIVE'`,
   ).all<{ id: string; cash_balance_jpy_c: number; cash_balance_usd_c: number }>();
@@ -73,7 +67,11 @@ export async function takeAssetSnapshots(env: Env): Promise<{ count: number; ski
     lotsByUser.set(lot.user_id, arr);
   }
 
-  const priceMap = await fetchPriceMap(env, lots.map((l) => l.symbol));
+  const { priceMap, usdJpy } = await fetchPricesAndRate(env, lots.map((l) => l.symbol));
+  if (usdJpy === null) {
+    // 為替が取れないと円換算の総資産が出せないため、誤った値を残さず今回は見送る
+    return { count: 0, skipped: 'usd/jpy rate unavailable' };
+  }
   const date = snapshotDateJst(Math.floor(Date.now() / 1000));
 
   const stmts = users.map((u) => {

@@ -25,6 +25,8 @@ export interface Env {
   LOGIN_LOCKOUT_MINUTES: string;
   ORDER_EXPIRY_MAX_DAYS: string;
   MARKET_DATA_CACHE_SECONDS: string;
+  /** 表示用の現在値(KV)のキャッシュ秒数。未設定なら1800秒（30分） */
+  DISPLAY_PRICE_CACHE_SECONDS?: string;
   SLIPPAGE_SAFETY_FACTOR: string;
   FX_EXCHANGE_RATE_LIMIT_PER_MIN: string;
 
