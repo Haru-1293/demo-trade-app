@@ -153,6 +153,8 @@ export interface WebauthnCredentialRow {
   transports: string | null;
   label: string | null;
   created_at: number;
+  scope: 'ADMIN' | 'USER'; // ADMIN: 管理画面用 / USER: 標準ユーザー用
+  last_used_at: number | null;
 }
 
 /**

@@ -43,6 +43,7 @@ async function api(path, options = {}) {
   if (!res.ok) {
     const err = new Error(json?.error || `HTTP ${res.status}`);
     err.status = res.status;
+    err.detail = json?.detail; // 検証失敗の理由など（パスキーの設定ミスの切り分けに使う）
     throw err;
   }
   return json;
@@ -1203,6 +1204,15 @@ function renderSettings(main) {
         <button class="btn btn-primary" id="pass-submit">変更する</button>
       </div>
 
+      <div class="section-title">パスキー</div>
+      <div class="card">
+        <p class="muted-text">パスキーを登録すると、パスワードを入力せずに、指紋・顔認証・画面ロックなどでログインできます。</p>
+        <div id="passkey-list" aria-busy="true">${skeletonRows(1)}</div>
+        ${passkeySupported()
+          ? '<button class="btn btn-outline" id="passkey-add-btn" style="margin-top:10px">＋ この端末のパスキーを追加</button>'
+          : '<p class="muted-text">このブラウザはパスキーに対応していません。</p>'}
+      </div>
+
       <div class="section-title">アカウント</div>
       <button class="btn btn-outline" id="logout-btn">ログアウト</button>
 
@@ -1211,6 +1221,9 @@ function renderSettings(main) {
     </div>
   `;
   document.getElementById('delete-account-btn').addEventListener('click', openDeleteAccountDialog);
+  const addBtn = document.getElementById('passkey-add-btn');
+  if (addBtn) addBtn.addEventListener('click', registerPasskey);
+  loadPasskeyList();
   document.getElementById('pass-submit').addEventListener('click', async () => {
     const currentPassword = document.getElementById('cur-pass').value;
     const newPassword = document.getElementById('new-pass').value;
@@ -1225,6 +1238,149 @@ function renderSettings(main) {
     try { await api('/logout', { method: 'POST' }); } catch { /* noop */ }
     render();
   });
+}
+
+// ---------- パスキー（標準ユーザー、仕様書4.16） ----------
+function passkeySupported() {
+  return !!(window.PublicKeyCredential && navigator.credentials);
+}
+function b64urlToBuf(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(b64url.length / 4) * 4, '=');
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+function bufToB64url(buf) {
+  let bin = '';
+  for (const b of new Uint8Array(buf)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function passkeyDeviceLabel() {
+  const ua = navigator.userAgent;
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : '端末';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome'
+    : /Safari\//.test(ua) ? 'Safari' : 'ブラウザ';
+  return `${os} / ${br}`;
+}
+function passkeyErrorMessage(e) {
+  if (e && e.name === 'NotAllowedError') return 'パスキーの操作がキャンセルされました';
+  if (e && e.name === 'InvalidStateError') return 'この端末のパスキーはすでに登録されています';
+  const msg = e && e.message ? e.message : String(e);
+  return e && e.detail ? `${msg}（${e.detail}）` : msg;
+}
+
+// ログイン画面: ユーザー名・パスワードなしで、端末に保存されたパスキーからログインする
+async function loginWithPasskey() {
+  const btn = document.getElementById('passkey-login-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const options = await api('/passkey/login-options', { method: 'POST', body: {} });
+    const assertion = await navigator.credentials.get({
+      publicKey: { ...options, challenge: b64urlToBuf(options.challenge) },
+    });
+    const r = assertion.response;
+    await api('/passkey/login-verify', {
+      method: 'POST',
+      body: {
+        credential: {
+          id: assertion.id,
+          rawId: bufToB64url(assertion.rawId),
+          type: assertion.type,
+          response: {
+            clientDataJSON: bufToB64url(r.clientDataJSON),
+            authenticatorData: bufToB64url(r.authenticatorData),
+            signature: bufToB64url(r.signature),
+            userHandle: r.userHandle ? bufToB64url(r.userHandle) : undefined,
+          },
+          clientExtensionResults: assertion.getClientExtensionResults ? assertion.getClientExtensionResults() : {},
+          authenticatorAttachment: assertion.authenticatorAttachment || undefined,
+        },
+      },
+    });
+    toast('パスキーでログインしました');
+    render();
+  } catch (e) {
+    toast(e && e.status ? passkeyErrorMessage(e) : `パスキーでログインできませんでした: ${passkeyErrorMessage(e)}`);
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 設定画面: パスキー一覧
+async function loadPasskeyList() {
+  const box = document.getElementById('passkey-list');
+  if (!box) return;
+  try {
+    const { credentials } = await api('/passkey/credentials');
+    if (!document.getElementById('passkey-list')) return; // 画面遷移済み
+    box.removeAttribute('aria-busy');
+    box.innerHTML = credentials.length ? credentials.map((c) => `
+      <div class="list-row">
+        <div>
+          <div class="name">🔑 ${escapeHtml(c.label || 'パスキー')}</div>
+          <div class="sub">登録 ${formatUnixDateTime(c.created_at)} ・ 最終使用 ${c.last_used_at ? formatUnixDateTime(c.last_used_at) : 'なし'}</div>
+        </div>
+        <button type="button" class="link-btn danger" data-passkey-delete="${escapeHtml(c.id)}">削除</button>
+      </div>`).join('') : '<div class="empty-hint">登録済みのパスキーはありません</div>';
+    box.querySelectorAll('[data-passkey-delete]').forEach((b) => b.addEventListener('click', () => deletePasskey(b.dataset.passkeyDelete)));
+  } catch (e) {
+    box.removeAttribute('aria-busy');
+    box.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// 設定画面: この端末のパスキーを追加
+async function registerPasskey() {
+  const btn = document.getElementById('passkey-add-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const options = await api('/passkey/register-options', { method: 'POST', body: {} });
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        ...options,
+        challenge: b64urlToBuf(options.challenge),
+        user: { ...options.user, id: b64urlToBuf(options.user.id) },
+        excludeCredentials: (options.excludeCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
+      },
+    });
+    const r = cred.response;
+    await api('/passkey/register-verify', {
+      method: 'POST',
+      body: {
+        label: passkeyDeviceLabel(),
+        credential: {
+          id: cred.id,
+          rawId: bufToB64url(cred.rawId),
+          type: cred.type,
+          response: {
+            clientDataJSON: bufToB64url(r.clientDataJSON),
+            attestationObject: bufToB64url(r.attestationObject),
+            transports: r.getTransports ? r.getTransports() : undefined,
+          },
+          clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+          authenticatorAttachment: cred.authenticatorAttachment || undefined,
+        },
+      },
+    });
+    toast('パスキーを追加しました');
+    loadPasskeyList();
+  } catch (e) {
+    toast(`パスキーを追加できませんでした: ${passkeyErrorMessage(e)}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deletePasskey(id) {
+  if (!confirm('このパスキーを削除しますか？（パスワードでのログインは引き続き使えます）')) return;
+  try {
+    await api(`/passkey/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    toast('削除しました');
+  } catch (e) {
+    toast(`削除に失敗しました: ${e.message}`);
+  }
+  loadPasskeyList();
 }
 
 // ---------- アカウント削除 ----------
@@ -1294,6 +1450,9 @@ function renderAuth() {
         <div id="turnstile-widget"></div>
       </div>
       <button class="btn btn-primary" id="auth-submit">${isLogin ? 'ログイン' : '新規登録'}</button>
+      ${isLogin && passkeySupported() ? `
+      <div class="auth-or"><span>または</span></div>
+      <button class="btn btn-outline" id="passkey-login-btn">🔑 パスキーでログイン</button>` : ''}
       <div class="auth-switch">
         ${isLogin ? 'アカウントをお持ちでない方は' : 'すでにアカウントをお持ちの方は'}
         <button class="btn-link" id="auth-switch-btn">${isLogin ? '新規登録' : 'ログイン'}</button>
@@ -1301,6 +1460,8 @@ function renderAuth() {
     </div>
   `;
   renderTurnstile();
+  const passkeyBtn = document.getElementById('passkey-login-btn');
+  if (passkeyBtn) passkeyBtn.addEventListener('click', loginWithPasskey);
   document.getElementById('auth-switch-btn').addEventListener('click', () => {
     state.authMode = isLogin ? 'register' : 'login';
     renderAuth();

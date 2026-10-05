@@ -173,3 +173,166 @@ export async function verifyAuthentication(
   if (!verification.verified) return { verified: false, error: 'verification returned not verified' };
   return { verified: true, newCounter: verification.authenticationInfo.newCounter };
 }
+
+// =====================================================================
+// 標準ユーザー向けパスキー（仕様書4.16）
+// チャレンジはKVではなくD1（webauthn_challenges）に保存する。KVはFreeプランで書き込みが1日1,000回までのため、
+// 認証前に誰でも叩ける login-options で枯渇させられるのを避ける。
+// =====================================================================
+
+const USER_RP_NAME = 'デモトレード';
+const MAX_OUTSTANDING_AUTH_CHALLENGES = 1000; // 未使用のログイン用チャレンジの上限（認証前のエンドポイントの連打対策）
+
+export class TooManyChallengesError extends Error {}
+
+/** WEBAUTHN_RP_ID / WEBAUTHN_ORIGIN が未設定・ビルド時注入前のプレースホルダーのままなら、利用者向けのエラー文を返す */
+export function webauthnConfigError(env: Env): string | null {
+  const bad = (v: unknown) => typeof v !== 'string' || !v.trim() || v.trim().startsWith('__');
+  if (bad(env.WEBAUTHN_RP_ID) || bad(env.WEBAUTHN_ORIGIN)) {
+    return 'パスキーの設定（WEBAUTHN_RP_ID / WEBAUTHN_ORIGIN）が完了していません';
+  }
+  return null;
+}
+
+/** チャレンジを1回だけ取り出す（取り出したら削除。期限切れ・使用済みは null）。DELETE ... RETURNING で原子的に行う */
+async function consumeChallenge(
+  env: Env,
+  kind: 'USER_REG' | 'USER_AUTH',
+  by: { challenge: string } | { userId: string },
+): Promise<string | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const [column, value] = 'challenge' in by ? ['challenge', by.challenge] : ['user_id', by.userId];
+  const { results } = await env.DB.prepare(
+    `DELETE FROM webauthn_challenges WHERE ${column} = ? AND kind = ? AND expires_at >= ? RETURNING challenge`,
+  )
+    .bind(value, kind, now)
+    .all<{ challenge: string }>();
+  return results[0]?.challenge ?? null;
+}
+
+/** 登録（ログイン済みユーザーが自分のパスキーを追加）。ユーザー名なしログインのため discoverable credential を必須にする */
+export async function createUserRegistrationOptions(
+  env: Env,
+  user: { id: string; username: string },
+  existingCredentials: WebauthnCredentialRow[],
+) {
+  const options = await generateRegistrationOptions({
+    rpName: USER_RP_NAME,
+    rpID: normalizeRpId(env.WEBAUTHN_RP_ID),
+    userID: new TextEncoder().encode(user.id) as Uint8Array<ArrayBuffer>,
+    userName: user.username,
+    userDisplayName: user.username,
+    attestationType: 'none',
+    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+    excludeCredentials: existingCredentials.map((c) => ({
+      id: c.credential_id,
+      transports: c.transports ? JSON.parse(c.transports) : undefined,
+    })),
+  });
+
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM webauthn_challenges WHERE (user_id = ? AND kind = 'USER_REG') OR expires_at < ?`).bind(user.id, now),
+    env.DB.prepare(
+      `INSERT INTO webauthn_challenges (challenge, kind, user_id, expires_at) VALUES (?, 'USER_REG', ?, ?)`,
+    ).bind(options.challenge, user.id, now + CHALLENGE_TTL_SECONDS),
+  ]);
+  return options;
+}
+
+export async function verifyUserRegistration(
+  env: Env,
+  userId: string,
+  response: RegistrationResponseJSON,
+): Promise<{ verified: boolean; credentialId?: string; publicKeyB64url?: string; counter?: number; transports?: string[]; error?: string }> {
+  const expectedChallenge = await consumeChallenge(env, 'USER_REG', { userId });
+  if (!expectedChallenge) return { verified: false, error: 'challenge expired or not found' };
+
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response,
+      expectedChallenge,
+      expectedOrigin: normalizeOrigin(env.WEBAUTHN_ORIGIN),
+      expectedRPID: normalizeRpId(env.WEBAUTHN_RP_ID),
+      requireUserVerification: true,
+    });
+  } catch (e) {
+    return { verified: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (!verification.verified || !verification.registrationInfo) {
+    return { verified: false, error: 'verification returned not verified' };
+  }
+  const { credential } = verification.registrationInfo;
+  return {
+    verified: true,
+    credentialId: credential.id,
+    publicKeyB64url: uint8ArrayToBase64url(credential.publicKey),
+    counter: credential.counter,
+    transports: response.response.transports,
+  };
+}
+
+/** ユーザー名なし（discoverable credential）ログイン用のオプション。allowCredentials は指定しない */
+export async function createUsernamelessAuthOptions(env: Env) {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(`DELETE FROM webauthn_challenges WHERE expires_at < ?`).bind(now).run();
+  const outstanding = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM webauthn_challenges WHERE kind = 'USER_AUTH'`,
+  ).first<{ n: number }>();
+  if ((outstanding?.n ?? 0) >= MAX_OUTSTANDING_AUTH_CHALLENGES) throw new TooManyChallengesError();
+
+  const options = await generateAuthenticationOptions({
+    rpID: normalizeRpId(env.WEBAUTHN_RP_ID),
+    userVerification: 'required',
+  });
+  await env.DB.prepare(
+    `INSERT INTO webauthn_challenges (challenge, kind, user_id, expires_at) VALUES (?, 'USER_AUTH', NULL, ?)`,
+  )
+    .bind(options.challenge, now + CHALLENGE_TTL_SECONDS)
+    .run();
+  return options;
+}
+
+/** ブラウザが返す clientDataJSON から、署名対象のチャレンジ文字列を取り出す（ユーザー未確定のため、これでチャレンジを引く） */
+export function extractClientDataChallenge(response: AuthenticationResponseJSON): string | null {
+  try {
+    const json = JSON.parse(new TextDecoder().decode(base64urlToUint8Array(response.response.clientDataJSON)));
+    return typeof json.challenge === 'string' ? json.challenge : null;
+  } catch {
+    return null;
+  }
+}
+
+/** ログイン用チャレンジを1回だけ消費する。成功＝このチャレンジは自分が発行した未使用・未期限のもの */
+export async function consumeAuthChallenge(env: Env, challenge: string): Promise<boolean> {
+  return (await consumeChallenge(env, 'USER_AUTH', { challenge })) !== null;
+}
+
+export async function verifyUserAuthentication(
+  env: Env,
+  expectedChallenge: string,
+  response: AuthenticationResponseJSON,
+  storedCredential: WebauthnCredentialRow,
+): Promise<{ verified: boolean; newCounter?: number; error?: string }> {
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge,
+      expectedOrigin: normalizeOrigin(env.WEBAUTHN_ORIGIN),
+      expectedRPID: normalizeRpId(env.WEBAUTHN_RP_ID),
+      requireUserVerification: true,
+      credential: {
+        id: storedCredential.credential_id,
+        publicKey: base64urlToUint8Array(storedCredential.public_key) as Uint8Array<ArrayBuffer>,
+        counter: storedCredential.counter,
+        transports: storedCredential.transports ? JSON.parse(storedCredential.transports) : undefined,
+      },
+    });
+  } catch (e) {
+    return { verified: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (!verification.verified) return { verified: false, error: 'verification returned not verified' };
+  return { verified: true, newCounter: verification.authenticationInfo.newCounter };
+}

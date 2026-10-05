@@ -115,7 +115,7 @@ app.post('/webauthn/register-options', requireAdminSession, async (c) => {
   }
 
   const { results: existing } = await c.env.DB.prepare(
-    `SELECT * FROM webauthn_credentials WHERE user_id = ?`,
+    `SELECT * FROM webauthn_credentials WHERE user_id = ? AND scope = 'ADMIN'`,
   )
     .bind(adminAuth.userId)
     .all<WebauthnCredentialRow>();
@@ -141,8 +141,8 @@ app.post('/webauthn/register-verify', requireAdminCsrf, requireAdminSession, asy
   }
 
   await c.env.DB.prepare(
-    `INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, counter, transports, label, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, counter, transports, label, created_at, scope)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ADMIN')`,
   )
     .bind(
       crypto.randomUUID(),
@@ -171,7 +171,7 @@ app.post('/webauthn/login-options', async (c) => {
   if (!user) return c.json({ error: 'not found' }, 404);
 
   const { results: creds } = await c.env.DB.prepare(
-    `SELECT * FROM webauthn_credentials WHERE user_id = ?`,
+    `SELECT * FROM webauthn_credentials WHERE user_id = ? AND scope = 'ADMIN'`,
   )
     .bind(user.id)
     .all<WebauthnCredentialRow>();
@@ -192,7 +192,7 @@ app.post('/webauthn/login-verify', async (c) => {
     .first<UserRow>();
   if (!user || user.status !== 'ACTIVE') return c.json({ error: 'invalid' }, 401);
 
-  const stored = await c.env.DB.prepare(`SELECT * FROM webauthn_credentials WHERE credential_id = ? AND user_id = ?`)
+  const stored = await c.env.DB.prepare(`SELECT * FROM webauthn_credentials WHERE credential_id = ? AND user_id = ? AND scope = 'ADMIN'`)
     .bind(body.credential?.id, body.userId)
     .first<WebauthnCredentialRow>();
   if (!stored) return c.json({ error: 'invalid credential' }, 401);
