@@ -137,7 +137,6 @@ function tabButton(tab, icon, label) {
 
 async function renderMain() {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="empty-hint">読み込み中...</div>`;
   if (state.tab !== 'search') clearSearchLive(); // 検索画面を離れたら検索結果分のライブ購読を解除
   if (state.tab === 'search') return renderSearch(main);
   if (state.tab === 'home') return renderHome(main);
@@ -146,6 +145,23 @@ async function renderMain() {
   if (state.tab === 'history') return renderHistory(main);
   if (state.tab === 'fx') return renderFx(main);
   if (state.tab === 'settings') return renderSettings(main);
+}
+
+// ---------- スケルトン（枠を先に出し、データが届いたら該当箇所へ埋め込む） ----------
+// 各画面は「静的な枠（見出し・ボタン・ラベル）＋データ部分のスケルトン」を即座に描画し、
+// APIの結果が届いたらデータ部分だけを差し替える。
+function skeletonInline(widthPx = 70) {
+  return `<span class="skeleton sk-inline" style="width:${widthPx}px" aria-hidden="true"></span>`;
+}
+function skeletonRows(n = 3) {
+  return Array.from({ length: n }, () => `
+    <div class="list-row" aria-hidden="true">
+      <div style="flex:1">
+        <div class="skeleton sk-line" style="width:45%"></div>
+        <div class="skeleton sk-line" style="width:75%"></div>
+      </div>
+      <div class="skeleton sk-line" style="width:56px"></div>
+    </div>`).join('');
 }
 
 // ---------- 共通ヘルパー ----------
@@ -194,35 +210,28 @@ function renderLineChart(points, fmt) {
 }
 
 async function renderMypage(main) {
-  let d;
-  try {
-    d = await api('/mypage');
-  } catch (e) {
-    main.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
-    return;
-  }
+  mypageData = null; // 前回の値で再計算しないよう破棄
+  const sk = skeletonInline;
 
-  mypageData = d;
-  const pp = pnlParts(d.unrealized_pnl_jpy_c, d.cost_jpy_c);
-
+  // 枠（見出し・ラベル・サブタブ・申請ボタン）を先に表示し、数値とグラフだけスケルトンにする
   main.innerHTML = `
     <div class="section">
       <div class="asset-card">
         <div class="asset-label">総資産（円換算）</div>
-        <div class="asset-total" id="mp-total">${d.total_assets_jpy_c == null ? '--' : yen(d.total_assets_jpy_c)}</div>
+        <div class="asset-total" id="mp-total">${sk(150)}</div>
         <div class="asset-pnl">
           評価損益
-          <span class="pnl ${pp.cls}" id="mp-pnl">${pp.text}</span>
+          <span class="pnl" id="mp-pnl">${sk(110)}</span>
         </div>
         <div class="asset-note" id="mp-note"></div>
       </div>
-      ${d.stale ? '<div class="empty-hint">一部の現在値・為替を取得できなかったため、取得価格などで概算しています。</div>' : ''}
+      <div id="mp-stale"></div>
 
       <div class="stat-grid">
-        <div class="stat"><div class="stat-label">現金（円）</div><div class="stat-value">${yen(d.cash_jpy_c)}</div></div>
-        <div class="stat"><div class="stat-label">現金（ドル）</div><div class="stat-value">${usd(d.cash_usd_c)}</div></div>
-        <div class="stat"><div class="stat-label">保有評価額</div><div class="stat-value" id="mp-valuation">${yen(d.valuation_jpy_c)}</div></div>
-        <div class="stat"><div class="stat-label">USD/JPY</div><div class="stat-value" id="mp-rate">${d.usd_jpy == null ? '--' : d.usd_jpy.toFixed(2)}</div></div>
+        <div class="stat"><div class="stat-label">現金（円）</div><div class="stat-value" id="mp-cash-jpy">${sk(80)}</div></div>
+        <div class="stat"><div class="stat-label">現金（ドル）</div><div class="stat-value" id="mp-cash-usd">${sk(70)}</div></div>
+        <div class="stat"><div class="stat-label">保有評価額</div><div class="stat-value" id="mp-valuation">${sk(80)}</div></div>
+        <div class="stat"><div class="stat-label">USD/JPY</div><div class="stat-value" id="mp-rate">${sk(50)}</div></div>
       </div>
 
       <div class="section-title">推移（日次）</div>
@@ -230,24 +239,54 @@ async function renderMypage(main) {
         ${Object.entries(MYPAGE_METRICS).map(([k, m]) =>
           `<button data-v="${k}" class="${mypageState.metric === k ? 'active' : ''}">${m.label}</button>`).join('')}
       </div>
-      <div id="mypage-chart"></div>
+      <div id="mypage-chart"><div class="skeleton sk-chart" aria-hidden="true"></div></div>
 
       <button class="btn btn-primary" id="topup-btn" style="margin-top:18px">現金の増額を申請する</button>
     </div>
   `;
 
   const drawChart = () => {
+    const box = document.getElementById('mypage-chart');
+    if (!box || !mypageData) return;
     const m = MYPAGE_METRICS[mypageState.metric];
-    const points = (d.snapshots || []).map((sn) => ({ date: sn.snapshot_date, v: sn[m.key] }));
-    document.getElementById('mypage-chart').innerHTML = renderLineChart(points, m.fmt);
+    const points = (mypageData.snapshots || []).map((sn) => ({ date: sn.snapshot_date, v: sn[m.key] }));
+    box.innerHTML = renderLineChart(points, m.fmt);
   };
-  drawChart();
+  // 枠の操作（サブタブ切替・増額申請）はデータの到着を待たずに使える
   main.querySelectorAll('#mypage-metrics button').forEach((b) => b.addEventListener('click', () => {
     mypageState.metric = b.dataset.v;
     main.querySelectorAll('#mypage-metrics button').forEach((x) => x.classList.toggle('active', x === b));
     drawChart();
   }));
   document.getElementById('topup-btn').addEventListener('click', openTopupDialog);
+
+  let d;
+  try {
+    d = await api('/mypage');
+  } catch (e) {
+    if (state.tab !== 'mypage' || !document.getElementById('mp-total')) return;
+    document.getElementById('mp-total').textContent = '--';
+    document.getElementById('mp-pnl').textContent = '--';
+    ['mp-cash-jpy', 'mp-cash-usd', 'mp-valuation', 'mp-rate'].forEach((id) => { document.getElementById(id).textContent = '--'; });
+    document.getElementById('mypage-chart').innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  // 待っている間に別のタブへ移動していたら、何も描画しない
+  if (state.tab !== 'mypage' || !document.getElementById('mp-total')) return;
+
+  mypageData = d;
+  const pp = pnlParts(d.unrealized_pnl_jpy_c, d.cost_jpy_c);
+  document.getElementById('mp-total').textContent = d.total_assets_jpy_c == null ? '--' : yen(d.total_assets_jpy_c);
+  const pnlEl = document.getElementById('mp-pnl');
+  pnlEl.textContent = pp.text;
+  pnlEl.className = `pnl ${pp.cls}`;
+  document.getElementById('mp-stale').innerHTML = d.stale
+    ? '<div class="empty-hint">一部の現在値・為替を取得できなかったため、取得価格などで概算しています。</div>' : '';
+  document.getElementById('mp-cash-jpy').textContent = yen(d.cash_jpy_c);
+  document.getElementById('mp-cash-usd').textContent = usd(d.cash_usd_c);
+  document.getElementById('mp-valuation').textContent = yen(d.valuation_jpy_c);
+  document.getElementById('mp-rate').textContent = d.usd_jpy == null ? '--' : d.usd_jpy.toFixed(2);
+  drawChart();
 
   // 保有銘柄はWSSを購読し、受信済み/受信したライブ価格で評価額を即時に更新する
   // （サーバーから届いた値は30分キャッシュの価格。ライブ価格が無い銘柄だけこの値のまま）
@@ -556,13 +595,29 @@ function syncSearchLive(symbols) {
 
 // ---------- ホーム(ポートフォリオ) ----------
 async function renderHome(main) {
+  // 枠（検索バー・見出し）を先に表示し、保有銘柄の一覧だけスケルトンにする
+  main.innerHTML = `
+    <div class="section">
+      <button type="button" class="search-pill" id="home-search-btn">
+        <span class="search-icon">🔍</span><span>銘柄を検索（名前・ティッカー・証券コード）</span>
+      </button>
+      <div class="section-title">保有銘柄</div>
+      <div id="home-rows" aria-busy="true">${skeletonRows(3)}</div>
+    </div>
+  `;
+  document.getElementById('home-search-btn').addEventListener('click', openSearch);
+
   try {
     const { trades } = await api('/portfolio');
     state.portfolio = trades || [];
   } catch (e) {
-    main.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    const slot = document.getElementById('home-rows');
+    if (slot) slot.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
     return;
   }
+  // 待っている間に別のタブへ移動していたら、何も描画しない
+  const slot = document.getElementById('home-rows');
+  if (!slot || state.tab !== 'home') return;
 
   const rows = state.portfolio.length
     ? state.portfolio.map((t) => `
@@ -586,16 +641,8 @@ async function renderHome(main) {
     `).join('')
     : `<div class="empty-hint">保有中の銘柄はありません。「注文」タブから購入できます。</div>`;
 
-  main.innerHTML = `
-    <div class="section">
-      <button type="button" class="search-pill" id="home-search-btn">
-        <span class="search-icon">🔍</span><span>銘柄を検索（名前・ティッカー・証券コード）</span>
-      </button>
-      <div class="section-title">保有銘柄</div>
-      ${rows}
-    </div>
-  `;
-  document.getElementById('home-search-btn').addEventListener('click', openSearch);
+  slot.removeAttribute('aria-busy');
+  slot.innerHTML = rows;
 
   main.querySelectorAll('[data-holding-action]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1034,7 +1081,7 @@ async function renderHistory(main) {
         <button data-v="fx" class="${historyState.sub === 'fx' ? 'active' : ''}">両替</button>
         <button data-v="cash" class="${historyState.sub === 'cash' ? 'active' : ''}">入出金</button>
       </div>
-      <div id="history-list"><div class="empty-hint">読み込み中...</div></div>
+      <div id="history-list" aria-busy="true">${skeletonRows(4)}</div>
     </div>
   `;
   main.querySelectorAll('#history-subtabs button').forEach((b) =>

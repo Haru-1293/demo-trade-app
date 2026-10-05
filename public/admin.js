@@ -228,7 +228,7 @@ function render() {
       <button data-t="symbols" class="${state.tab === 'symbols' ? 'active' : ''}">銘柄管理</button>
       <button data-t="topup" class="${state.tab === 'topup' ? 'active' : ''}">現金申請</button>
     </div>
-    <div class="admin-panel" id="admin-panel"><div class="empty-hint">読み込み中...</div></div>
+    <div class="admin-panel" id="admin-panel"></div>
   `;
   document.querySelectorAll('.admin-tabs button').forEach((b) =>
     b.addEventListener('click', () => { state.tab = b.dataset.t; render(); }));
@@ -244,8 +244,15 @@ function render() {
 }
 
 // ---------- ユーザー管理 ----------
+// 読み込み中の枠（表のスケルトン）。データが届いたらパネルごと差し替える
+function adminSkeleton(rows = 5) {
+  const line = '<div class="skeleton sk-line" style="width:100%;height:34px;margin:8px 0"></div>';
+  return `<div aria-busy="true">${Array.from({ length: rows }, () => line).join('')}</div>`;
+}
+
 async function renderUsers() {
   const panel = document.getElementById('admin-panel');
+  panel.innerHTML = adminSkeleton();
   try {
     const { users } = await api('/admin/users');
     state.users = users;
@@ -337,7 +344,7 @@ async function toggleHistory(userId) {
   document.querySelectorAll('.history-row').forEach((r) => { r.style.display = 'none'; });
   row.style.display = '';
   const panel = row.querySelector('.history-panel');
-  panel.innerHTML = '読み込み中...';
+  panel.innerHTML = adminSkeleton(3);
   try {
     const [{ trades }, { orders }, { transactions }] = await Promise.all([
       api(`/admin/users/${userId}/trades`),
@@ -361,6 +368,7 @@ async function toggleHistory(userId) {
 // ---------- 銘柄管理 ----------
 async function renderSymbols() {
   const panel = document.getElementById('admin-panel');
+  panel.innerHTML = adminSkeleton();
   try {
     const { symbols } = await api('/admin/symbols');
     state.symbols = symbols;
@@ -473,6 +481,7 @@ function formatTopupAmount(r) {
 
 async function renderTopupRequests() {
   const panel = document.getElementById('admin-panel');
+  panel.innerHTML = adminSkeleton();
   let pending, decided;
   try {
     [{ requests: pending }, { requests: decided }] = await Promise.all([
