@@ -129,3 +129,13 @@
 .sk-line { height: 12px; margin: 7px 0; }
 @keyframes skeleton-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+
+/* ---------- ユーティリティ（CSPでインラインstyle属性が使えないため、クラスで指定する） ---------- */
+[hidden] { display: none !important; }
+.muted { color: var(--text-sub); }
+.muted-note { font-size: 12px; color: var(--text-sub); }
+.muted-small { font-size: 11px; color: var(--text-sub); margin-top: 6px; }
+.admin-h3 { margin: 0 0 8px; font-size: 14px; }
+.admin-h3.mt-20 { margin-top: 20px; }
+.w-70 { width: 70px; }
+.sk-admin-row { width: 100%; height: 34px; margin: 8px 0; }

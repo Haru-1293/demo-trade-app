@@ -6,7 +6,7 @@
   <title>デモトレード</title>
   <!-- ライブ株価表示(WSS)はWorker(/api/live-prices)がYahoo Financeへパススルー中継するため、
        クライアントは自ドメインへの接続のみで済む(仕様書4.8) -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; frame-src https://challenges.cloudflare.com;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; connect-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; form-action 'self';" />
   <link rel="stylesheet" href="/styles.css" />
   <!-- Turnstile: 明示的レンダリング(render=explicit)。ウィジェット生成はapp.jsのrenderTurnstile()が行う。サイトキーはビルド時にapp.js内の__TURNSTILE_SITE_KEY__へ注入される -->
   <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>

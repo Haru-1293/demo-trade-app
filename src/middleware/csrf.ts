@@ -1,3 +1,4 @@
+import { timingSafeEqualStr } from '../services/validation';
 import type { MiddlewareHandler } from 'hono';
 import type { Env } from '../types';
 
@@ -17,7 +18,7 @@ export const requireCsrf: MiddlewareHandler<{ Bindings: Env }> = async (c, next)
   const match = cookieHeader.match(/(?:^|; )csrf_token=([^;]+)/);
   const cookieToken = match?.[1] ? decodeURIComponent(match[1]) : null;
 
-  if (!header || !cookieToken || header !== cookieToken) {
+  if (!header || !cookieToken || !timingSafeEqualStr(header, cookieToken)) {
     return c.json({ error: 'CSRF token mismatch' }, 403);
   }
   await next();

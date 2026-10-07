@@ -547,3 +547,14 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .auth-or::before, .auth-or::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 .muted-text { font-size: 12px; color: var(--text-sub); line-height: 1.6; margin: 0 0 10px; }
 .link-btn.danger { color: var(--danger); }
+
+/* ---------- ユーティリティ（CSPでインラインstyle属性が使えないため、クラスで指定する） ---------- */
+.flex-1 { flex: 1; }
+.mt-6 { margin-top: 6px; }
+.mt-10 { margin-top: 10px; }
+.mt-18 { margin-top: 18px; }
+.my-10 { margin-top: 10px; margin-bottom: 10px; }
+.fs-18 { font-size: 18px; }
+.sk-w50 { width: 50px; } .sk-w70 { width: 70px; } .sk-w80 { width: 80px; }
+.sk-w110 { width: 110px; } .sk-w150 { width: 150px; }
+.sk-w56 { width: 56px; } .sk-w45p { width: 45%; } .sk-w75p { width: 75%; }

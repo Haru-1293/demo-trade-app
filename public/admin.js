@@ -70,7 +70,7 @@ async function init() {
       root.innerHTML = `<div class="admin-denied">管理者権限がありません。</div>`;
       return;
     }
-    root.innerHTML = `<div class="admin-denied">読み込みに失敗しました: ${e.message}</div>`;
+    root.innerHTML = `<div class="admin-denied">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     return;
   }
   render();
@@ -92,7 +92,7 @@ function renderLogin() {
 
       <div class="form-group">
         <label>メールアドレス</label>
-        <input type="text" id="login-email" value="${loginState.email}">
+        <input type="text" id="login-email" value="${escapeHtml(loginState.email)}">
       </div>
 
       ${loginState.mode === 'password' ? `
@@ -105,7 +105,7 @@ function renderLogin() {
         </div>
         <button class="btn btn-primary" id="login-submit">ログイン</button>
       ` : `
-        <p style="font-size:12px;color:var(--text-sub)">あらかじめパスキーを登録済みのメールアドレスを入力し、ブラウザ・端末の認証（顔認証/指紋/PINなど）でログインします。</p>
+        <p class="muted-note">あらかじめパスキーを登録済みのメールアドレスを入力し、ブラウザ・端末の認証（顔認証/指紋/PINなど）でログインします。</p>
         <button class="btn btn-primary" id="login-passkey-submit">パスキーでログイン</button>
       `}
     </div>
@@ -246,7 +246,7 @@ function render() {
 // ---------- ユーザー管理 ----------
 // 読み込み中の枠（表のスケルトン）。データが届いたらパネルごと差し替える
 function adminSkeleton(rows = 5) {
-  const line = '<div class="skeleton sk-line" style="width:100%;height:34px;margin:8px 0"></div>';
+  const line = '<div class="skeleton sk-line sk-admin-row"></div>';
   return `<div aria-busy="true">${Array.from({ length: rows }, () => line).join('')}</div>`;
 }
 
@@ -257,7 +257,7 @@ async function renderUsers() {
     const { users } = await api('/admin/users');
     state.users = users;
   } catch (e) {
-    panel.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    panel.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     return;
   }
 
@@ -271,11 +271,11 @@ async function renderUsers() {
       </thead>
       <tbody>
         ${state.users.map((u) => `
-          <tr data-user-id="${u.id}">
-            <td>${u.username}</td>
-            <td>${u.email || '<span style="color:var(--text-sub)">未登録</span>'}</td>
-            <td>${u.role}</td>
-            <td><span class="status-pill ${u.status}">${u.status}</span></td>
+          <tr data-user-id="${escapeHtml(u.id)}">
+            <td>${escapeHtml(u.username)}</td>
+            <td>${u.email ? escapeHtml(u.email) : '<span class="muted">未登録</span>'}</td>
+            <td>${escapeHtml(u.role)}</td>
+            <td><span class="status-pill ${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>
             <td>¥${Math.floor(u.cash_balance_jpy_c / 100).toLocaleString()}</td>
             <td>$${(u.cash_balance_usd_c / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
             <td class="actions">
@@ -286,7 +286,7 @@ async function renderUsers() {
               <button data-act="history">履歴</button>
             </td>
           </tr>
-          <tr class="history-row" data-history-row="${u.id}" style="display:none"><td colspan="7"><div class="history-panel"></div></td></tr>
+          <tr class="history-row" data-history-row="${escapeHtml(u.id)}" hidden><td colspan="7"><div class="history-panel"></div></td></tr>
         `).join('')}
       </tbody>
     </table>
@@ -337,12 +337,12 @@ async function handleUserAction(action, user) {
 async function toggleHistory(userId) {
   const row = document.querySelector(`[data-history-row="${userId}"]`);
   if (!row) return;
-  if (row.style.display !== 'none') {
-    row.style.display = 'none';
+  if (!row.hidden) {
+    row.hidden = true;
     return;
   }
-  document.querySelectorAll('.history-row').forEach((r) => { r.style.display = 'none'; });
-  row.style.display = '';
+  document.querySelectorAll('.history-row').forEach((r) => { r.hidden = true; });
+  row.hidden = false;
   const panel = row.querySelector('.history-panel');
   panel.innerHTML = adminSkeleton(3);
   try {
@@ -353,15 +353,15 @@ async function toggleHistory(userId) {
     ]);
     panel.innerHTML = `
       <strong>取引 (${trades.length})</strong>
-      <ul>${trades.slice(0, 10).map((t) => `<li>${t.name} ${t.quantity}株 ${t.status} 買${t.buy_price}${t.sell_price ? ' 売' + t.sell_price : ''}</li>`).join('') || '<li>なし</li>'}</ul>
+      <ul>${trades.slice(0, 10).map((t) => `<li>${escapeHtml(t.name)} ${escapeHtml(t.quantity)}株 ${escapeHtml(t.status)} 買${escapeHtml(t.buy_price)}${t.sell_price ? ' 売' + escapeHtml(t.sell_price) : ''}</li>`).join('') || '<li>なし</li>'}</ul>
       <strong>注文 (${orders.length})</strong>
-      <ul>${orders.slice(0, 10).map((o) => `<li>${o.symbol} ${o.order_type} ${o.quantity}株 ${o.status}</li>`).join('') || '<li>なし</li>'}</ul>
+      <ul>${orders.slice(0, 10).map((o) => `<li>${escapeHtml(o.symbol)} ${escapeHtml(o.order_type)} ${escapeHtml(o.quantity)}株 ${escapeHtml(o.status)}</li>`).join('') || '<li>なし</li>'}</ul>
       <strong>両替 (${transactions.length})</strong>
-      <ul>${transactions.slice(0, 10).map((f) => `<li>${f.direction} レート${f.fx_rate}</li>`).join('') || '<li>なし</li>'}</ul>
-      <div style="color:var(--text-sub);font-size:11px;margin-top:6px">※直近10件まで表示</div>
+      <ul>${transactions.slice(0, 10).map((f) => `<li>${escapeHtml(f.direction)} レート${escapeHtml(f.fx_rate)}</li>`).join('') || '<li>なし</li>'}</ul>
+      <div class="muted-small">※直近10件まで表示</div>
     `;
   } catch (e) {
-    panel.innerHTML = `読み込みに失敗しました: ${e.message}`;
+    panel.innerHTML = `読み込みに失敗しました: ${escapeHtml(e.message)}`;
   }
 }
 
@@ -373,14 +373,14 @@ async function renderSymbols() {
     const { symbols } = await api('/admin/symbols');
     state.symbols = symbols;
   } catch (e) {
-    panel.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    panel.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     return;
   }
 
   panel.innerHTML = `
     <div class="admin-form-row">
       <button id="symbol-sync-btn" class="primary">🔄 JPX/SECから自動同期（毎日08:30 JSTにも自動実行）</button>
-      <span id="symbol-sync-status" style="font-size:12px;color:var(--text-sub)"></span>
+      <span id="symbol-sync-status" class="muted-note"></span>
     </div>
     <div class="admin-form-row" id="symbol-add-form">
       <div class="field"><label>市場</label>
@@ -392,7 +392,7 @@ async function renderSymbols() {
       <div class="field"><label>通貨</label>
         <select id="new-currency"><option value="JPY">JPY</option><option value="USD">USD</option></select>
       </div>
-      <div class="field"><label>単元</label><input type="number" id="new-unit" value="100" style="width:70px"></div>
+      <div class="field"><label>単元</label><input type="number" id="new-unit" value="100" class="w-70"></div>
       <button id="symbol-add-btn">追加</button>
     </div>
     <table class="admin-table">
@@ -401,9 +401,9 @@ async function renderSymbols() {
       </thead>
       <tbody>
         ${state.symbols.map((s) => `
-          <tr data-code="${s.code}" data-market="${s.market}">
-            <td>${s.market}</td><td>${s.code}</td><td>${s.symbol}</td><td>${s.name}</td>
-            <td>${s.currency}</td><td>${s.unit_size}</td>
+          <tr data-code="${escapeHtml(s.code)}" data-market="${escapeHtml(s.market)}">
+            <td>${escapeHtml(s.market)}</td><td>${escapeHtml(s.code)}</td><td>${escapeHtml(s.symbol)}</td><td>${escapeHtml(s.name)}</td>
+            <td>${escapeHtml(s.currency)}</td><td>${escapeHtml(s.unit_size)}</td>
             <td><span class="status-pill ${s.active ? 'ACTIVE' : 'DELETED'}">${s.active ? '有効' : '無効'}</span></td>
             <td class="actions">
               <button data-act="toggle" class="${s.active ? 'danger' : 'primary'}">${s.active ? '無効化' : '有効化'}</button>
@@ -459,7 +459,7 @@ async function addSymbol() {
 
 async function toggleSymbolActive(sym) {
   try {
-    await api(`/admin/symbols/${sym.market}/${sym.code}`, { method: 'PATCH', body: { active: !sym.active } });
+    await api(`/admin/symbols/${encodeURIComponent(sym.market)}/${encodeURIComponent(sym.code)}`, { method: 'PATCH', body: { active: !sym.active } });
     toast(sym.active ? '無効化しました' : '有効化しました');
     renderSymbols();
   } catch (e) {
@@ -489,24 +489,24 @@ async function renderTopupRequests() {
       api('/admin/cash-topup-requests?status=ALL'),
     ]);
   } catch (e) {
-    panel.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    panel.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     return;
   }
   const done = decided.filter((r) => r.status !== 'PENDING').slice(0, 30);
   const when = (sec) => (sec ? new Date(sec * 1000).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }) : '');
 
   panel.innerHTML = `
-    <h3 style="margin:0 0 8px;font-size:14px">承認待ち（${pending.length}件）</h3>
+    <h3 class="admin-h3">承認待ち（${pending.length}件）</h3>
     ${pending.length ? `
     <table class="admin-table">
       <thead><tr><th>申請日時</th><th>ユーザー</th><th>金額</th><th>理由・メモ</th><th>操作</th></tr></thead>
       <tbody>
         ${pending.map((r) => `
-          <tr data-req-id="${r.id}">
+          <tr data-req-id="${escapeHtml(r.id)}">
             <td>${when(r.requested_at)}</td>
             <td>${escapeHtml(r.username)}</td>
             <td>${formatTopupAmount(r)}</td>
-            <td>${r.reason ? escapeHtml(r.reason) : '<span style="color:var(--text-sub)">なし</span>'}</td>
+            <td>${r.reason ? escapeHtml(r.reason) : '<span class="muted">なし</span>'}</td>
             <td class="actions">
               <button data-decide="APPROVED" class="primary">承認</button>
               <button data-decide="REJECTED" class="danger">却下</button>
@@ -515,7 +515,7 @@ async function renderTopupRequests() {
       </tbody>
     </table>` : '<div class="empty-hint">承認待ちの申請はありません</div>'}
 
-    <h3 style="margin:20px 0 8px;font-size:14px">処理済み（直近30件）</h3>
+    <h3 class="admin-h3 mt-20">処理済み（直近30件）</h3>
     ${done.length ? `
     <table class="admin-table">
       <thead><tr><th>申請日時</th><th>ユーザー</th><th>金額</th><th>結果</th><th>処理日時</th></tr></thead>

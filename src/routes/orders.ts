@@ -28,8 +28,29 @@ interface MarketOrderBody {
   settlement_currency?: SettlementCurrency;
 }
 
-async function findExistingOrder(db: D1Database, idempotencyKey: string) {
-  return db.prepare(`SELECT * FROM orders WHERE idempotency_key = ?`).bind(idempotencyKey).first();
+// 冪等性キーは「自分の注文」の中だけで照合する（他人の注文が返ってしまう情報漏えいを防ぐ）
+async function findExistingOrder(db: D1Database, userId: string, idempotencyKey: string) {
+  return db
+    .prepare(`SELECT * FROM orders WHERE idempotency_key = ? AND user_id = ?`)
+    .bind(idempotencyKey, userId)
+    .first();
+}
+
+const MAX_ORDER_QUANTITY = 1_000_000_000;
+
+/** 注文本文の共通検証。問題があればエラーメッセージを返す */
+function validateOrderBody(body: {
+  market?: unknown; code?: unknown; quantity?: unknown; idempotency_key?: unknown;
+}): string | null {
+  if (body.market !== 'JP' && body.market !== 'US') return 'invalid market';
+  if (typeof body.code !== 'string' || !body.code || body.code.length > 20) return 'invalid code';
+  if (!Number.isInteger(body.quantity) || (body.quantity as number) <= 0 || (body.quantity as number) > MAX_ORDER_QUANTITY) {
+    return 'invalid quantity';
+  }
+  if (typeof body.idempotency_key !== 'string' || !body.idempotency_key || body.idempotency_key.length > 100) {
+    return 'idempotency_key required';
+  }
+  return null;
 }
 
 function cashColumn(currency: 'JPY' | 'USD'): string {
@@ -49,17 +70,17 @@ function validateSettlementCurrency(market: Market, settlement?: SettlementCurre
  */
 app.post('/orders/market', requireCsrf, requireAuth, async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json<MarketOrderBody>();
+  const body = await c.req.json<MarketOrderBody>().catch(() => null);
+  if (!body) return c.json({ error: 'invalid body' }, 400);
 
-  if (!Number.isInteger(body.quantity) || body.quantity <= 0) {
-    return c.json({ error: 'invalid quantity' }, 400);
-  }
-  if (!body.idempotency_key) return c.json({ error: 'idempotency_key required' }, 400);
+  const bodyError = validateOrderBody(body);
+  if (bodyError) return c.json({ error: bodyError }, 400);
+  if (body.side !== 'BUY' && body.side !== 'SELL') return c.json({ error: 'invalid side' }, 400);
 
   const settlementError = validateSettlementCurrency(body.market, body.settlement_currency);
   if (settlementError) return c.json({ error: settlementError }, 400);
 
-  const existing = await findExistingOrder(c.env.DB, body.idempotency_key);
+  const existing = await findExistingOrder(c.env.DB, auth.userId, body.idempotency_key);
   if (existing) return c.json({ order: existing });
 
   const symbolRow = await c.env.DB.prepare(
@@ -183,18 +204,23 @@ interface LimitOrderBody extends MarketOrderBody {
  */
 app.post('/orders/limit', requireCsrf, requireAuth, async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json<LimitOrderBody>();
+  const body = await c.req.json<LimitOrderBody>().catch(() => null);
+  if (!body) return c.json({ error: 'invalid body' }, 400);
 
-  if (!Number.isInteger(body.quantity) || body.quantity <= 0) {
-    return c.json({ error: 'invalid quantity' }, 400);
+  const bodyError = validateOrderBody(body);
+  if (bodyError) return c.json({ error: bodyError }, 400);
+  if (body.order_type !== 'BUY_LIMIT' && body.order_type !== 'SELL_LIMIT') {
+    return c.json({ error: 'invalid order_type' }, 400);
   }
-  if (!body.idempotency_key) return c.json({ error: 'idempotency_key required' }, 400);
-  if (!(body.target_price > 0)) return c.json({ error: 'invalid target_price' }, 400);
+  if (typeof body.target_price !== 'number' || !Number.isFinite(body.target_price) || !(body.target_price > 0) || body.target_price > 1e9) {
+    return c.json({ error: 'invalid target_price' }, 400);
+  }
+  if (typeof body.expires_date !== 'string') return c.json({ error: 'invalid expires_date' }, 400);
 
   const settlementError = validateSettlementCurrency(body.market, body.settlement_currency);
   if (settlementError) return c.json({ error: settlementError }, 400);
 
-  const existing = await findExistingOrder(c.env.DB, body.idempotency_key);
+  const existing = await findExistingOrder(c.env.DB, auth.userId, body.idempotency_key);
   if (existing) return c.json({ order: existing });
 
   const symbolRow = await c.env.DB.prepare(

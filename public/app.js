@@ -152,16 +152,16 @@ async function renderMain() {
 // 各画面は「静的な枠（見出し・ボタン・ラベル）＋データ部分のスケルトン」を即座に描画し、
 // APIの結果が届いたらデータ部分だけを差し替える。
 function skeletonInline(widthPx = 70) {
-  return `<span class="skeleton sk-inline" style="width:${widthPx}px" aria-hidden="true"></span>`;
+  return `<span class="skeleton sk-inline sk-w${widthPx}" aria-hidden="true"></span>`;
 }
 function skeletonRows(n = 3) {
   return Array.from({ length: n }, () => `
     <div class="list-row" aria-hidden="true">
-      <div style="flex:1">
-        <div class="skeleton sk-line" style="width:45%"></div>
-        <div class="skeleton sk-line" style="width:75%"></div>
+      <div class="flex-1">
+        <div class="skeleton sk-line sk-w45p"></div>
+        <div class="skeleton sk-line sk-w75p"></div>
       </div>
-      <div class="skeleton sk-line" style="width:56px"></div>
+      <div class="skeleton sk-line sk-w56"></div>
     </div>`).join('');
 }
 
@@ -242,7 +242,7 @@ async function renderMypage(main) {
       </div>
       <div id="mypage-chart"><div class="skeleton sk-chart" aria-hidden="true"></div></div>
 
-      <button class="btn btn-primary" id="topup-btn" style="margin-top:18px">現金の増額を申請する</button>
+      <button class="btn btn-primary mt-18" id="topup-btn">現金の増額を申請する</button>
     </div>
   `;
 
@@ -514,7 +514,7 @@ function drawSearchResults() {
   if (st.state !== 'ready') {
     syncSearchLive([]);
     box.innerHTML = st.state === 'error'
-      ? `<div class="empty-hint">銘柄データを取得できませんでした（${escapeHtml(st.error || '')}）<br><button type="button" class="btn btn-outline" id="search-retry" style="margin-top:10px">再試行</button></div>`
+      ? `<div class="empty-hint">銘柄データを取得できませんでした（${escapeHtml(st.error || '')}）<br><button type="button" class="btn btn-outline mt-10" id="search-retry">再試行</button></div>`
       : '<div class="empty-hint">銘柄データを読み込み中…（初回のみ数秒かかります）</div>';
     foot.innerHTML = '';
     const retry = document.getElementById('search-retry');
@@ -545,14 +545,14 @@ function drawSearchResults() {
     <div class="list-row search-row">
       <div class="search-main">
         <div class="name">${escapeHtml(r.name)}</div>
-        <div class="sub">${escapeHtml(r.code)} ・ ${escapeHtml(r.symbol)} ・ ${MARKET_LABEL[r.market] || r.market}</div>
+        <div class="sub">${escapeHtml(r.code)} ・ ${escapeHtml(r.symbol)} ・ ${escapeHtml(MARKET_LABEL[r.market] || r.market)}</div>
         <div class="row-actions">
-          <button type="button" class="row-action-btn buy" data-act="BUY" data-market="${r.market}" data-code="${escapeHtml(r.code)}">買い</button>
-          <button type="button" class="row-action-btn sell" data-act="SELL" data-market="${r.market}" data-code="${escapeHtml(r.code)}">売り</button>
+          <button type="button" class="row-action-btn buy" data-act="BUY" data-market="${escapeHtml(r.market)}" data-code="${escapeHtml(r.code)}">買い</button>
+          <button type="button" class="row-action-btn sell" data-act="SELL" data-market="${escapeHtml(r.market)}" data-code="${escapeHtml(r.code)}">売り</button>
         </div>
       </div>
       <div class="value">
-        <span data-live-symbol="${escapeHtml(r.symbol)}" data-live-format="quote" data-currency="${r.currency}">--</span>
+        <span data-live-symbol="${escapeHtml(r.symbol)}" data-live-format="quote" data-currency="${escapeHtml(r.currency)}">--</span>
         <span class="live-dot" data-live-dot="${escapeHtml(r.symbol)}" title="ライブ未接続">●</span>
         <div class="asof" data-asof="${escapeHtml(r.symbol)}"></div>
       </div>
@@ -564,9 +564,9 @@ function drawSearchResults() {
   const more = total > results.length && searchState.limit < SEARCH_MAX;
   foot.innerHTML = `
     <div>${total.toLocaleString()}件中 ${results.length.toLocaleString()}件を表示</div>
-    ${more ? '<button type="button" class="btn btn-outline" id="search-more" style="margin:10px 0">さらに表示</button>' : ''}
+    ${more ? '<button type="button" class="btn btn-outline my-10" id="search-more">さらに表示</button>' : ''}
     ${total > SEARCH_MAX && searchState.limit >= SEARCH_MAX ? '<div>件数が多いため、キーワードを足して絞り込んでください</div>' : ''}
-    <div style="margin-top:6px">${footInfo}</div>`;
+    <div class="mt-6">${footInfo}</div>`;
   const moreBtn = document.getElementById('search-more');
   if (moreBtn) moreBtn.addEventListener('click', () => {
     searchState.limit = Math.min(SEARCH_MAX, searchState.limit + SEARCH_PAGE);
@@ -613,7 +613,7 @@ async function renderHome(main) {
     state.portfolio = trades || [];
   } catch (e) {
     const slot = document.getElementById('home-rows');
-    if (slot) slot.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    if (slot) slot.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     return;
   }
   // 待っている間に別のタブへ移動していたら、何も描画しない
@@ -622,20 +622,20 @@ async function renderHome(main) {
 
   const rows = state.portfolio.length
     ? state.portfolio.map((t) => `
-      <div class="list-row" data-symbol-row="${t.symbol}">
+      <div class="list-row" data-symbol-row="${escapeHtml(t.symbol)}">
         <div>
-          <div class="name">${t.name} <span class="sub">${t.code}</span></div>
+          <div class="name">${escapeHtml(t.name)} <span class="sub">${escapeHtml(t.code)}</span></div>
           <div class="sub">
-            ${t.quantity}株 @ ${t.buy_price} (${t.buy_date})
-            ・現在値 <span data-live-symbol="${t.symbol}" data-buy-price="${t.buy_price}">${t.market === 'JP' ? '¥' : '$'}${t.buy_price}</span><span class="asof" data-asof="${t.symbol}"></span>
-            <span class="live-dot" data-live-dot="${t.symbol}" title="ライブ未接続">●</span>
+            ${escapeHtml(t.quantity)}株 @ ${escapeHtml(t.buy_price)} (${escapeHtml(t.buy_date)})
+            ・現在値 <span data-live-symbol="${escapeHtml(t.symbol)}" data-buy-price="${escapeHtml(t.buy_price)}">${t.market === 'JP' ? '¥' : '$'}${escapeHtml(t.buy_price)}</span><span class="asof" data-asof="${escapeHtml(t.symbol)}"></span>
+            <span class="live-dot" data-live-dot="${escapeHtml(t.symbol)}" title="ライブ未接続">●</span>
           </div>
           <div class="row-actions">
-            <button type="button" class="row-action-btn buy" data-holding-action="BUY" data-market="${t.market}" data-code="${t.code}" data-qty="${t.quantity}">追加購入</button>
-            <button type="button" class="row-action-btn sell" data-holding-action="SELL" data-market="${t.market}" data-code="${t.code}" data-qty="${t.quantity}">売却</button>
+            <button type="button" class="row-action-btn buy" data-holding-action="BUY" data-market="${escapeHtml(t.market)}" data-code="${escapeHtml(t.code)}" data-qty="${escapeHtml(t.quantity)}">追加購入</button>
+            <button type="button" class="row-action-btn sell" data-holding-action="SELL" data-market="${escapeHtml(t.market)}" data-code="${escapeHtml(t.code)}" data-qty="${escapeHtml(t.quantity)}">売却</button>
           </div>
         </div>
-        <div class="value" data-live-value="${t.symbol}" data-market="${t.market}" data-quantity="${t.quantity}">
+        <div class="value" data-live-value="${escapeHtml(t.symbol)}" data-market="${escapeHtml(t.market)}" data-quantity="${escapeHtml(t.quantity)}">
           ${t.market === 'JP' ? yenFromPrice(t.buy_price, t.quantity) : usdFromPrice(t.buy_price, t.quantity)}
         </div>
       </div>
@@ -786,9 +786,9 @@ async function renderOrder(main) {
         <div class="suggest" id="symbol-suggest" hidden></div>
       </div>
 
-      <div class="form-group" id="order-price-preview" style="display:none">
+      <div class="form-group" id="order-price-preview" hidden>
         <label>現在値（ライブ）</label>
-        <div><span class="ticker-value" id="order-price-preview-value" style="font-size:18px"></span><span class="asof" data-asof="" id="order-price-preview-asof"></span></div>
+        <div><span class="ticker-value fs-18" id="order-price-preview-value"></span><span class="asof" data-asof="" id="order-price-preview-asof"></span></div>
       </div>
 
       <div class="segmented buy-sell" id="side-seg">
@@ -960,9 +960,9 @@ function showSymbolSuggest(text) {
     return;
   }
   box.innerHTML = results.map((r) => `
-    <button type="button" class="suggest-item" data-market="${r.market}" data-code="${escapeHtml(r.code)}">
+    <button type="button" class="suggest-item" data-market="${escapeHtml(r.market)}" data-code="${escapeHtml(r.code)}">
       <span class="suggest-name">${escapeHtml(r.name)}</span>
-      <span class="suggest-sub">${escapeHtml(r.code)} ・ ${escapeHtml(r.symbol)} ・ ${MARKET_LABEL[r.market] || r.market}</span>
+      <span class="suggest-sub">${escapeHtml(r.code)} ・ ${escapeHtml(r.symbol)} ・ ${escapeHtml(MARKET_LABEL[r.market] || r.market)}</span>
     </button>`).join('') + (total > results.length ? `<div class="suggest-more">ほか ${total - results.length} 件（絞り込んでください）</div>` : '');
   box.hidden = false;
   box.querySelectorAll('.suggest-item').forEach((b) => b.addEventListener('click', () => {
@@ -1008,10 +1008,10 @@ function updateOrderPricePreview(sym) {
   const valEl = document.getElementById('order-price-preview-value');
   if (!box || !valEl) return;
   if (!sym) {
-    box.style.display = 'none';
+    box.hidden = true;
     return;
   }
-  box.style.display = 'block';
+  box.hidden = false;
   valEl.dataset.liveSymbol = sym.symbol;
   valEl.dataset.liveFormat = 'quote';
   valEl.dataset.currency = sym.currency;
@@ -1095,10 +1095,10 @@ async function renderHistory(main) {
       list.innerHTML = orders.length ? orders.map((o) => `
         <div class="list-row">
           <div>
-            <div class="name">${o.symbol} <span class="badge ${o.status}">${o.status}</span></div>
-            <div class="sub">${o.order_type} / ${o.quantity}株${o.target_price ? ` @ ${o.target_price}` : ''}</div>
+            <div class="name">${escapeHtml(o.symbol)} <span class="badge ${escapeHtml(o.status)}">${escapeHtml(o.status)}</span></div>
+            <div class="sub">${escapeHtml(o.order_type)} / ${escapeHtml(o.quantity)}株${o.target_price ? ` @ ${escapeHtml(o.target_price)}` : ''}</div>
           </div>
-          ${o.status === 'PENDING' ? `<button class="btn-link" data-cancel="${o.id}">取消</button>` : ''}
+          ${o.status === 'PENDING' ? `<button class="btn-link" data-cancel="${escapeHtml(o.id)}">取消</button>` : ''}
         </div>
       `).join('') : `<div class="empty-hint">注文履歴はありません</div>`;
       list.querySelectorAll('[data-cancel]').forEach((b) =>
@@ -1108,8 +1108,8 @@ async function renderHistory(main) {
       list.innerHTML = trades.length ? trades.map((t) => `
         <div class="list-row">
           <div>
-            <div class="name">${t.name} <span class="badge ${t.status}">${t.status}</span></div>
-            <div class="sub">${t.quantity}株 買 ${t.buy_price}(${t.buy_date})${t.sell_price ? ` → 売 ${t.sell_price}(${t.sell_date})` : ''}</div>
+            <div class="name">${escapeHtml(t.name)} <span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></div>
+            <div class="sub">${escapeHtml(t.quantity)}株 買 ${escapeHtml(t.buy_price)}(${escapeHtml(t.buy_date)})${t.sell_price ? ` → 売 ${escapeHtml(t.sell_price)}(${escapeHtml(t.sell_date)})` : ''}</div>
           </div>
           ${t.profit_jpy_c != null ? `<div class="value ${t.profit_jpy_c >= 0 ? 'up' : 'down'}">${yen(t.profit_jpy_c)}</div>` : ''}
         </div>
@@ -1120,7 +1120,7 @@ async function renderHistory(main) {
       list.innerHTML = requests.length ? requests.map((r) => `
         <div class="list-row">
           <div>
-            <div class="name">運営への入金申請 <span class="badge ${r.status}">${label[r.status] || r.status}</span></div>
+            <div class="name">運営への入金申請 <span class="badge ${escapeHtml(r.status)}">${escapeHtml(label[r.status] || r.status)}</span></div>
             <div class="sub">${formatUnixDateTime(r.requested_at)}${r.reason ? ` ・ ${escapeHtml(r.reason)}` : ''}</div>
           </div>
           <div class="value ${r.status === 'APPROVED' ? 'up' : ''}">${r.status === 'APPROVED' ? '+' : ''}${r.currency === 'JPY' ? yen(r.amount_c) : usd(r.amount_c)}</div>
@@ -1132,14 +1132,14 @@ async function renderHistory(main) {
         <div class="list-row">
           <div>
             <div class="name">${f.direction === 'JPY_TO_USD' ? 'JPY → USD' : 'USD → JPY'}</div>
-            <div class="sub">レート ${f.fx_rate}</div>
+            <div class="sub">レート ${escapeHtml(f.fx_rate)}</div>
           </div>
           <div class="value">${f.direction === 'JPY_TO_USD' ? usd(f.result_amount_c) : yen(f.result_amount_c)}</div>
         </div>
       `).join('') : `<div class="empty-hint">両替履歴はありません</div>`;
     }
   } catch (e) {
-    list.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${e.message}</div>`;
+    list.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1209,7 +1209,7 @@ function renderSettings(main) {
         <p class="muted-text">パスキーを登録すると、パスワードを入力せずに、指紋・顔認証・画面ロックなどでログインできます。</p>
         <div id="passkey-list" aria-busy="true">${skeletonRows(1)}</div>
         ${passkeySupported()
-          ? '<button class="btn btn-outline" id="passkey-add-btn" style="margin-top:10px">＋ この端末のパスキーを追加</button>'
+          ? '<button class="btn btn-outline mt-10" id="passkey-add-btn">＋ この端末のパスキーを追加</button>'
           : '<p class="muted-text">このブラウザはパスキーに対応していません。</p>'}
       </div>
 

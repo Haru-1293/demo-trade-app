@@ -14,8 +14,21 @@ import adminAuthRoutes from './routes/adminAuth';
 import { requireAuth } from './middleware/auth';
 import { syncSymbols } from './services/symbolSync';
 import { takeAssetSnapshots } from './services/snapshot';
+import { SECURITY_HEADERS } from './services/securityHeaders';
+import { sanitizeClientMessage } from './services/liveFilter';
+import { HTTPException } from 'hono/http-exception';
 
 const app = new Hono<{ Bindings: Env }>();
+
+// 全レスポンスにセキュリティヘッダーを付与する（仕様書6.）。静的ファイルは public/_headers で同じ内容を付与する。
+// 101(WebSocketアップグレード)はヘッダー操作の制約があるため除外する。
+app.use('*', async (c, next) => {
+  await next();
+  if (c.res.status === 101) return;
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    if (!c.res.headers.has(name)) c.res.headers.set(name, value);
+  }
+});
 
 // 認証必須APIは Cache-Control: no-store を強制（仕様書6.）
 // ただし101(WebSocketアップグレード)レスポンスはヘッダー操作の制約があるため除外する
@@ -41,7 +54,7 @@ app.route('/api/admin-auth', adminAuthRoutes);
 // USE_WORKER_PROXY=true の間だけ有効な市場データプロキシ（仕様書5.）
 const ALLOWED_PROXY_HOSTS = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
 
-app.get('/api/proxy', async (c) => {
+app.get('/api/proxy', requireAuth, async (c) => {
   if (c.env.USE_WORKER_PROXY !== 'true') {
     return c.notFound();
   }
@@ -54,7 +67,12 @@ app.get('/api/proxy', async (c) => {
   } catch {
     return c.json({ error: 'invalid url' }, 400);
   }
-  if (!ALLOWED_PROXY_HOSTS.includes(parsed.hostname)) {
+  // https のチャートAPIだけを中継する（任意のパス・スキームを許さない）
+  if (
+    parsed.protocol !== 'https:' ||
+    !ALLOWED_PROXY_HOSTS.includes(parsed.hostname) ||
+    !parsed.pathname.startsWith('/v8/finance/chart/')
+  ) {
     return c.json({ error: 'host not allowed' }, 403);
   }
 
@@ -66,8 +84,6 @@ app.get('/api/proxy', async (c) => {
     status: upstream.status,
     headers: {
       'Content-Type': upstream.headers.get('Content-Type') ?? 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Credentials': 'true',
       'Cache-Control': 'no-store',
     },
   });
@@ -85,6 +101,11 @@ app.get('/api/live-prices', requireAuth, async (c) => {
   const upgradeHeader = c.req.header('Upgrade');
   if (upgradeHeader !== 'websocket') {
     return c.json({ error: 'expected websocket upgrade' }, 426);
+  }
+  // 他サイトのページからの接続（Cross-Site WebSocket Hijacking）を拒否する。ブラウザは必ずOriginを付ける。
+  const origin = c.req.header('Origin');
+  if (origin && origin !== new URL(c.req.url).origin) {
+    return c.json({ error: 'forbidden origin' }, 403);
   }
 
   const pair = new WebSocketPair();
@@ -120,9 +141,13 @@ app.get('/api/live-prices', requireAuth, async (c) => {
   }
   upstream.accept();
 
+  // クライアント→上流は、subscribe/unsubscribe（形式の正しいシンボルのみ、購読数上限あり）だけを中継する
+  const subscribed = new Set<string>();
   server.addEventListener('message', (event) => {
+    const forward = sanitizeClientMessage(event.data, subscribed);
+    if (forward === null) return;
     try {
-      upstream!.send(event.data as string);
+      upstream!.send(forward);
     } catch {
       /* noop */
     }
@@ -175,8 +200,12 @@ app.notFound((c) => c.json({ error: 'Not Found' }, 404));
  * （WebAuthn検証の例外がこの経路で発生していたため追加した）。
  */
 app.onError((err, c) => {
+  // Honoが投げる意図的なHTTP例外（不正なJSON等）はそのステータスで返す
+  if (err instanceof HTTPException) return err.getResponse();
+  if (err instanceof SyntaxError) return c.json({ error: 'invalid body' }, 400);
+  // 内部のエラーメッセージ（SQL・ライブラリの詳細など）は利用者に返さず、サーバーのログにだけ残す
   console.error('unhandled error', err);
-  return c.json({ error: 'internal server error', detail: err.message }, 500);
+  return c.json({ error: 'internal server error' }, 500);
 });
 
 export default {

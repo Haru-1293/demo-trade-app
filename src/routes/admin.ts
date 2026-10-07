@@ -4,6 +4,7 @@ import { requireAdminSession, requireAdminCsrf } from '../middleware/adminAuth';
 
 import { generateSalt, hashPassword } from '../services/crypto';
 import { sendPasswordChangedEmail } from '../services/email';
+import { validatePassword } from '../services/validation';
 import { syncSymbols } from '../services/symbolSync';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -75,7 +76,14 @@ app.patch('/users/:id/status', requireAdminCsrf, async (c) => {
 app.patch('/users/:id/balance', requireAdminCsrf, async (c) => {
   const adminAuth = c.get('adminAuth');
   const targetId = c.req.param('id');
-  const body = await c.req.json<{ cash_balance_jpy_c?: number; cash_balance_usd_c?: number }>();
+  const body = await c.req
+    .json<{ cash_balance_jpy_c?: number; cash_balance_usd_c?: number }>()
+    .catch(() => null);
+  // 残高は 0以上の整数（銭/セント単位）。NaN・負数・小数・桁あふれを弾く
+  const validBalance = (v: unknown) => v === undefined || (Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= 1e15);
+  if (!body || !validBalance(body.cash_balance_jpy_c) || !validBalance(body.cash_balance_usd_c)) {
+    return c.json({ error: 'invalid balance' }, 400);
+  }
 
   const before = await c.env.DB.prepare(
     `SELECT cash_balance_jpy_c, cash_balance_usd_c FROM users WHERE id = ?`,
@@ -135,9 +143,10 @@ app.get('/users/:id/fx-transactions', async (c) => {
 app.patch('/users/:id/password', requireAdminCsrf, async (c) => {
   const adminAuth = c.get('adminAuth');
   const targetId = c.req.param('id');
-  const body = await c.req.json<{ newPassword: string }>();
-  if (!body.newPassword || body.newPassword.length < 4) {
-    return c.json({ error: 'invalid password' }, 400);
+  const body = await c.req.json<{ newPassword: string }>().catch(() => null);
+  const passwordError = validatePassword(body?.newPassword);
+  if (!body || passwordError) {
+    return c.json({ error: passwordError ?? 'invalid body' }, 400);
   }
 
   const target = await c.env.DB.prepare(`SELECT username, email FROM users WHERE id = ?`)

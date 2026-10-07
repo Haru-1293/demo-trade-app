@@ -46,7 +46,12 @@ async function issueAdminSession(c: any, userId: string) {
  * ロックアウト・失敗回数は users テーブルを共有（同一アカウントのため）。
  */
 app.post('/login', async (c) => {
-  const body = await c.req.json<{ email: string; password: string; turnstileToken: string }>();
+  const body = await c.req
+    .json<{ email: string; password: string; turnstileToken: string }>()
+    .catch(() => null);
+  if (!body || typeof body.email !== 'string' || typeof body.password !== 'string' || body.password.length > 1024) {
+    return c.json({ error: 'invalid body' }, 400);
+  }
 
   const remoteIp = c.req.header('CF-Connecting-IP') ?? undefined;
   const turnstileOk = await verifyTurnstile(c.env, body.turnstileToken, remoteIp);
@@ -105,7 +110,7 @@ app.post('/logout', requireAdminCsrf, requireAdminSession, async (c) => {
  * POST /api/admin-auth/webauthn/register-options
  * パスキー登録の開始。既にメール+パスワードでログイン済み(requireAdminSession)であることが前提。
  */
-app.post('/webauthn/register-options', requireAdminSession, async (c) => {
+app.post('/webauthn/register-options', requireAdminCsrf, requireAdminSession, async (c) => {
   const adminAuth = c.get('adminAuth');
   const user = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?`)
     .bind(adminAuth.userId)
@@ -164,19 +169,22 @@ app.post('/webauthn/register-verify', requireAdminCsrf, requireAdminSession, asy
  * body: { email } — 対象アカウントに登録済みのパスキーに限定した認証オプションを返す。
  */
 app.post('/webauthn/login-options', async (c) => {
-  const body = await c.req.json<{ email: string }>();
+  const body = await c.req.json<{ email: string }>().catch(() => null);
+  if (!body || typeof body.email !== 'string') return c.json({ error: 'invalid body' }, 400);
   const user = await c.env.DB.prepare(`SELECT id FROM users WHERE email = ? AND role = 'ADMIN'`)
     .bind(body.email)
     .first<{ id: string }>();
-  if (!user) return c.json({ error: 'not found' }, 404);
 
-  const { results: creds } = await c.env.DB.prepare(
-    `SELECT * FROM webauthn_credentials WHERE user_id = ? AND scope = 'ADMIN'`,
-  )
-    .bind(user.id)
-    .all<WebauthnCredentialRow>();
-  if (!creds || creds.length === 0) {
-    return c.json({ error: 'このアカウントにはパスキーが登録されていません' }, 400);
+  const creds = user
+    ? (
+        await c.env.DB.prepare(`SELECT * FROM webauthn_credentials WHERE user_id = ? AND scope = 'ADMIN'`)
+          .bind(user.id)
+          .all<WebauthnCredentialRow>()
+      ).results
+    : [];
+  // 管理者のメールアドレスが存在するかどうかを推測されないよう、「未登録のメール」と「パスキー未登録」は同じ応答にする
+  if (!user || !creds || creds.length === 0) {
+    return c.json({ error: 'このメールアドレスではパスキーでログインできません（メールアドレス未登録、またはパスキー未登録）' }, 400);
   }
 
   const options = await createAuthenticationOptions(c.env, user.id, creds);
@@ -185,7 +193,8 @@ app.post('/webauthn/login-options', async (c) => {
 
 /** POST /api/admin-auth/webauthn/login-verify — body: { userId, credential } */
 app.post('/webauthn/login-verify', async (c) => {
-  const body = await c.req.json<{ userId: string; credential: any }>();
+  const body = await c.req.json<{ userId: string; credential: any }>().catch(() => null);
+  if (!body || typeof body.userId !== 'string' || !body.credential) return c.json({ error: 'invalid body' }, 400);
 
   const user = await c.env.DB.prepare(`SELECT * FROM users WHERE id = ? AND role = 'ADMIN'`)
     .bind(body.userId)

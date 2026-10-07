@@ -1,3 +1,4 @@
+import { timingSafeEqualStr } from '../services/validation';
 import type { MiddlewareHandler } from 'hono';
 import type { Env, AdminAuthContext, AdminSessionRow, UserRow } from '../types';
 import { hashSessionToken } from '../services/crypto';
@@ -56,7 +57,7 @@ export const requireAdminCsrf: MiddlewareHandler<{ Bindings: Env }> = async (c, 
   }
   const header = c.req.header('X-Admin-CSRF-Token');
   const cookieToken = getCookie(c.req.raw, 'admin_csrf_token');
-  if (!header || !cookieToken || header !== cookieToken) {
+  if (!header || !cookieToken || !timingSafeEqualStr(header, cookieToken)) {
     return c.json({ error: 'CSRF token mismatch' }, 403);
   }
   await next();

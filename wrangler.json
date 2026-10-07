@@ -31,7 +31,7 @@
     }
   ],
   "vars": {
-    "USE_WORKER_PROXY": "true",
+    "USE_WORKER_PROXY": "false",
     "SESSION_COOKIE_NAME": "session",
     "SESSION_TTL_DAYS": "30",
     "LOGIN_MAX_FAILS": "5",

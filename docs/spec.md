@@ -1,6 +1,19 @@
 # 日米対応デモトレードシステム 全体詳細仕様書
 
-**文書版数:** 2.6 **仕様確定日:** 2026年9月13日（v2.2 改訂: 2026年9月13日 / v2.3 改訂: 2026年10月2日 / v2.4 改訂: 2026年10月3日 / v2.5 改訂: 2026年10月4日 / v2.6 改訂: 2026年10月6日） **対象フェーズ:** MVP **用途:** 学習、デモ、シミュレーション専用
+**文書版数:** 2.7 **仕様確定日:** 2026年9月13日（v2.2 改訂: 2026年9月13日 / v2.3 改訂: 2026年10月2日 / v2.4 改訂: 2026年10月3日 / v2.5 改訂: 2026年10月4日 / v2.6 改訂: 2026年10月6日 / v2.7 改訂: 2026年10月7日） **対象フェーズ:** MVP **用途:** 学習、デモ、シミュレーション専用
+
+### v2.7 での変更点（v2.6 からの差分、セキュリティ調査と修正）
+- **XSS対策:** 画面に埋め込むサーバー由来の値（銘柄名・ユーザー名・メール・ラベル・理由・エラーメッセージ等）を、標準アプリ・管理画面の全画面で `escapeHtml()` するよう統一。特に、登録時に誰でも自由に付けられる**ユーザー名**が管理画面のユーザー一覧にそのまま入っていた箇所は、管理者を狙う保存型の注入の入口だった（CSPで実行は防がれていたが、HTML注入は可能だった）（6.）
+- **インラインstyle属性を全廃**（CSSクラスへ）。CSPの `style-src 'self'` はHTML内の `style="..."` を無効にするため、v0.1から `style="display:none"` が効かない箇所があった（注文画面の指値欄が成行でも表示されていた不具合7.2.4の本当の原因、管理画面の履歴行が最初から開いていた等）。表示切替は `hidden` 属性＋`[hidden]{display:none !important}` に統一（6.）
+- **HTTPセキュリティヘッダー**を追加。CSPはこれまで `<meta>` のみで `frame-ancestors`（クリックジャッキング対策）が効いていなかった。CSPに `object-src 'none'`・`base-uri 'none'`・`form-action 'self'`・`frame-ancestors 'none'` を追加し、`X-Content-Type-Options`・`X-Frame-Options`・`Referrer-Policy`・`Permissions-Policy`・`Cross-Origin-Opener-Policy`・`Strict-Transport-Security` を付与（Workerのレスポンスはミドルウェア、静的ファイルは `public/_headers`）（6.）
+- **入力検証:** 登録時のユーザー名（3〜32文字の文字・数字・`_ . -`）とパスワード（8〜128文字）、パスワード変更・管理者によるパスワード再設定、注文（`side`/`market`/`order_type`/数量上限/価格の有限値と上限/`idempotency_key`）、管理者の残高調整（0以上の整数）を追加。壊れたJSONは500ではなく400（6.）
+- **エラー応答:** 想定外の例外で内部メッセージ（SQL・ライブラリの詳細）を返さなくした。ログにのみ残す（6.）
+- **`/api/proxy`:** 認証必須化、`/v8/finance/chart/` のhttpsのみ許可、CORSワイルドカード（`Access-Control-Allow-Origin: *`）の廃止、`USE_WORKER_PROXY` を `false` に変更（クライアントは使っていないため）（5.）
+- **ライブ株価WebSocket:** Originの検証（他サイトからの接続を拒否）、クライアントから上流へ中継するメッセージを `subscribe`/`unsubscribe`（形式の正しいシンボルのみ）に限定し、購読数に上限（1接続150件、1メッセージ50件）（4.8, 6.）
+- **冪等性キー**を自分の注文の範囲だけで照合するよう修正（他人の注文が返りうる情報漏えいの防止）
+- **管理者のパスキーログイン:** 未登録のメールアドレスと、パスキー未登録の管理者で同じ応答にし、管理者のメールアドレスが存在するかを推測できないようにした。`register-options` にCSRF検証を追加
+- CSRFトークンの比較を一定時間比較に変更
+- **未対応・要判断:** パスワードのハッシュ（単純なSHA-256、6.）、`xlsx` パッケージの既知の脆弱性（6.）
 
 ### v2.6 での変更点（v2.5 からの差分、標準ユーザーのパスキー認証）
 - **標準ユーザーがパスキー（WebAuthn）でログインできる**ようにした。ログイン画面の「パスキーでログイン」から、ユーザー名・パスワード・Turnstileなしで、端末に保存されたパスキー（指紋・顔認証・画面ロック等）で認証する（4.16）
@@ -498,7 +511,7 @@ Workers のリクエスト制限を回避するため、以下の 2 段階の切
 
 - **切り替えフラグ:** `wrangler.json` 内の環境変数 `USE_WORKER_PROXY` (`"true"` / `"false"`)
 - **挙動:**
-  - `USE_WORKER_PROXY = "true"`（初期状態）: `/api/proxy?url=...` へのリクエストに対し、Worker が外部 API からレスポンスを取得し（60秒キャッシュ経由）、CORS ヘッダー（`Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true`）を付与して返却する。
+  - `USE_WORKER_PROXY = "true"`: `/api/proxy?url=...` へのリクエストに対し、Worker が外部 API からレスポンスを取得して返却する。**v2.7で、ログイン必須・`query1/query2.finance.yahoo.com` の `https://…/v8/finance/chart/` のみ許可・CORSヘッダー（`Access-Control-Allow-Origin: *` 等）を付けない、に変更した。** 現在のクライアントはこのプロキシを使っていないため、`wrangler.json` の初期値は `"false"`（無効）。
   - `USE_WORKER_PROXY = "false"`（独自ドメイン取得後・Rules 移行時）: API プロキシへのアクセスは `404` を返し、クライアントは外部 API または専用ドメイン宛てに直接リクエストを送信する。CORS ヘッダーの書き換えは Cloudflare の **Response Header Modification Rules**（インフラ層）が担うため、Worker の実行回数および CPU 時間は消費されない。
 
 ## 6. エラーハンドリング・セキュリティ要件
@@ -510,6 +523,22 @@ Workers のリクエスト制限を回避するため、以下の 2 段階の切
   - 認証が必要な API レスポンスには `Cache-Control: no-store` を設定する。
   - 状態変更を伴う API（注文・両替・キャンセル・管理者操作等）は `SameSite=Lax` Cookie に加えて **CSRFトークン** の検証を必須とする。
   - パスワードは `password_salt`（ユーザー毎ランダム値）と `SHA-256` で保護する。将来的な強化としては PBKDF2 / bcrypt / scrypt 等のストレッチング付きハッシュへの移行を推奨する。
+  - **XSS対策（v2.7）:**
+    - 画面（標準アプリ・管理画面）のHTMLに埋め込むサーバー由来の値は、数値・固定の列挙値を含めて**すべて `escapeHtml()` を通す**（テキストにも属性値にも）。`innerHTML` へ渡すテンプレートに、エスケープしていないデータを入れない。エラー文も、`toast`（`textContent`）以外へ出すときはエスケープする。
+    - URLのパス部分にデータを入れるときは `encodeURIComponent`、CSSセレクターに入れるときは `cssEscape` を通す。
+    - インラインスクリプト・`eval`・`javascript:`・インラインイベントハンドラ属性・**インラインstyle属性・`<style>`ブロックを使わない**（CSPで禁止しているため、スタイルはCSSクラスで指定する。JSからの `el.style.xxx = ...` や `hidden` 属性の切り替えはCSPの対象外）。
+    - ユーザー名は登録時に「3〜32文字の文字・数字（日本語を含む）と `_ . -`」に限定する（HTMLで特別な意味を持つ文字・空白・制御文字は使えない）。
+  - **HTTPレスポンスヘッダー（v2.7）:** 全レスポンスに次を付与する。Workerが返す `/api/*` は `src/services/securityHeaders.ts` のミドルウェア、静的ファイルは `public/_headers`（両者を同じ値に保つ）。
+    - `Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; connect-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`（HTML内の `<meta>` にも `frame-ancestors` 以外を同内容で置く）
+    - `X-Content-Type-Options: nosniff` / `X-Frame-Options: DENY` / `Referrer-Policy: strict-origin-when-cross-origin` / `Permissions-Policy`（カメラ・マイク・位置情報等を無効化。WebAuthnは既定で自サイトに許可） / `Cross-Origin-Opener-Policy: same-origin` / `Strict-Transport-Security: max-age=31536000`
+  - **入力検証（v2.7）:** 本文の型・形式・範囲をサーバー側で検証する。ユーザー名・パスワード（登録時とパスワード変更時、管理者による再設定時）は `src/services/validation.ts`、注文は `routes/orders.ts` の `validateOrderBody` など。JSONが壊れている場合は400を返す。ログインは、既存ユーザーの古いユーザー名・パスワードでも入れるよう、型と長さの確認のみ行う。
+  - **エラー応答（v2.7）:** 想定外の例外は `500 {error: 'internal server error'}` のみを返し、メッセージの詳細（SQL・ライブラリの内部情報）は返さずサーバーのログに残す。パスキーの検証失敗の理由（`detail`）は、設定ミスの切り分けのために残している。
+  - **WebSocket（v2.7）:** `/api/live-prices` は、`Origin` が自サイトと異なる接続を拒否する（Cross-Site WebSocket Hijacking対策）。クライアントから上流へ中継するのは `subscribe` / `unsubscribe`（シンボルは英数字と `. - = ^` の20文字以内）だけで、1メッセージ50件・1接続150件・8KBまで。それ以外のフレームは捨てる（認証済みの利用者でも、上流へ任意のデータを送れないようにする）。
+  - **権限・冪等性（v2.7）:** 注文の冪等性キーは自分の注文の範囲だけで照合する。CSRFトークンの比較は一定時間比較で行う。
+  - **既知のリスクと未対応（v2.7時点）:**
+    - パスワードのハッシュが、ソルト付きの単純なSHA-256（1回）で、総当たりに弱い。PBKDF2等への移行（ログイン成功時にハッシュを透過的に置き換える方式）を推奨するが、Workersの実行時間（CPU時間）の制限にかかわるため、プランを確認してから行う。ログインの試行回数制限（アカウントロック）とTurnstileは併用している。
+    - 依存パッケージ `xlsx`（JPXの銘柄一覧の読み込みに使用）に、npmで公開されている版の既知の脆弱性（プロトタイプ汚染・ReDoS）がある。npmには修正版が無く（SheetJSは配布先を自社CDNに移した）、現状は信頼できる取得元（JPXの公開ファイル）のCron実行のみで使っているため影響は限定的。
+    - Yahoo Finance（非公式API・WSS）への依存。取得できない場合は約定させずエラーにする方針（本章の先頭）で扱う。
   - **Cloudflare Bot Management（Bot Fight Mode）** をゾーンレベルで有効化し、本システムの全APIエンドポイント（`/api/*`）への自動化リクエストをスコアリング・ブロックする。ログイン・新規登録の Turnstile、両替APIのユーザー単位レート制限（4.6）と多層的に併用する。**注意点:** Bot Management はあくまで「外部からこのシステムへ入ってくるリクエスト」を守るものであり、Worker が Yahoo Finance へアクセスする際の取得方式（4.6）には影響しない。Yahoo Finance側のアクセス遮断リスクへの対策は、4.6に記載の60秒キャッシュの厳格運用で行う。
 
 ## 7. v0.2に向けた変更計画（v0.1.0リリース後の不具合修正・追加要望）

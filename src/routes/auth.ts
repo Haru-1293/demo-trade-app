@@ -10,6 +10,7 @@ import {
 } from '../services/crypto';
 import { issueSession } from '../services/session';
 import { verifyTurnstile } from '../services/turnstile';
+import { validateUsername, validatePassword } from '../services/validation';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -18,7 +19,13 @@ const app = new Hono<{ Bindings: Env }>();
  * 仕様書4.1: Turnstile検証 → 初期資金付与 → ソルト付きハッシュでパスワード保存
  */
 app.post('/register', async (c) => {
-  const body = await c.req.json<{ username: string; password: string; turnstileToken: string }>();
+  const body = await c.req
+    .json<{ username: string; password: string; turnstileToken: string }>()
+    .catch(() => null);
+  if (!body) return c.json({ error: 'invalid body' }, 400);
+  // 形式の検証（Turnstileの前に行い、不正な入力で外部検証を消費しない）
+  const inputError = validateUsername(body.username) ?? validatePassword(body.password);
+  if (inputError) return c.json({ error: inputError }, 400);
 
   const remoteIp = c.req.header('CF-Connecting-IP') ?? undefined;
   const turnstileOk = await verifyTurnstile(c.env, body.turnstileToken, remoteIp);
@@ -51,7 +58,16 @@ app.post('/register', async (c) => {
  * 仕様書4.1: Turnstile検証 → lockout判定 → パスワード照合 → HttpOnly Cookie発行
  */
 app.post('/login', async (c) => {
-  const body = await c.req.json<{ username: string; password: string; turnstileToken: string }>();
+  const body = await c.req
+    .json<{ username: string; password: string; turnstileToken: string }>()
+    .catch(() => null);
+  // 型と長さだけ確認する（既存ユーザーの古いユーザー名・パスワードでもログインできるよう、形式の規則は適用しない）
+  if (
+    !body || typeof body.username !== 'string' || typeof body.password !== 'string' ||
+    body.username.length > 200 || body.password.length > 1024
+  ) {
+    return c.json({ error: 'invalid body' }, 400);
+  }
 
   const remoteIp = c.req.header('CF-Connecting-IP') ?? undefined;
   const turnstileOk = await verifyTurnstile(c.env, body.turnstileToken, remoteIp);
@@ -121,7 +137,10 @@ app.post('/logout', requireCsrf, requireAuth, async (c) => {
  */
 app.post('/account/password', requireCsrf, requireAuth, async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json<{ currentPassword: string; newPassword: string }>();
+  const body = await c.req.json<{ currentPassword: string; newPassword: string }>().catch(() => null);
+  if (!body || typeof body.currentPassword !== 'string') return c.json({ error: 'invalid body' }, 400);
+  const passwordError = validatePassword(body.newPassword);
+  if (passwordError) return c.json({ error: passwordError }, 400);
 
   const user = await c.env.DB.prepare(
     `SELECT password_salt, password_hash FROM users WHERE id = ?`,
@@ -153,7 +172,7 @@ app.post('/account/password', requireCsrf, requireAuth, async (c) => {
 app.post('/account/delete', requireCsrf, requireAuth, async (c) => {
   const auth = c.get('auth');
   const body = await c.req.json<{ password: string }>().catch(() => null);
-  if (!body || !body.password) return c.json({ error: 'password required' }, 400);
+  if (!body || typeof body.password !== 'string' || !body.password) return c.json({ error: 'password required' }, 400);
 
   const user = await c.env.DB.prepare(
     `SELECT password_salt, password_hash, role FROM users WHERE id = ?`,
