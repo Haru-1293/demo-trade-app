@@ -90,12 +90,11 @@ function renderLogin() {
         <button data-v="passkey" class="${loginState.mode === 'passkey' ? 'active' : ''}">パスキー</button>
       </div>
 
-      <div class="form-group">
-        <label>メールアドレス</label>
-        <input type="text" id="login-email" value="${escapeHtml(loginState.email)}">
-      </div>
-
       ${loginState.mode === 'password' ? `
+        <div class="form-group">
+          <label>メールアドレス</label>
+          <input type="text" id="login-email" value="${escapeHtml(loginState.email)}">
+        </div>
         <div class="form-group">
           <label>パスワード</label>
           <input type="password" id="login-password">
@@ -105,7 +104,7 @@ function renderLogin() {
         </div>
         <button class="btn btn-primary" id="login-submit">ログイン</button>
       ` : `
-        <p class="muted-note">あらかじめパスキーを登録済みのメールアドレスを入力し、ブラウザ・端末の認証（顔認証/指紋/PINなど）でログインします。</p>
+        <p class="muted-note">メールアドレスの入力は不要です。ボタンを押して、端末に保存された管理画面用のパスキーを選び、顔認証/指紋/PINなどで認証してください。</p>
         <button class="btn btn-primary" id="login-passkey-submit">パスキーでログイン</button>
       `}
     </div>
@@ -113,7 +112,8 @@ function renderLogin() {
 
   document.querySelectorAll('#login-mode-seg button').forEach((b) =>
     b.addEventListener('click', () => { loginState.mode = b.dataset.v; renderLogin(); }));
-  document.getElementById('login-email').addEventListener('input', (e) => { loginState.email = e.target.value.trim(); });
+  const emailInput = document.getElementById('login-email');
+  if (emailInput) emailInput.addEventListener('input', (e) => { loginState.email = e.target.value.trim(); });
 
   if (loginState.mode === 'password') {
     document.getElementById('login-submit').addEventListener('click', submitPasswordLogin);
@@ -139,12 +139,10 @@ async function submitPasswordLogin() {
 }
 
 async function submitPasskeyLogin() {
-  const email = loginState.email;
-  if (!email) { toast('メールアドレスを入力してください'); return; }
   if (!window.PublicKeyCredential) { toast('このブラウザはパスキーに対応していません'); return; }
 
   try {
-    const { options, userId } = await api('/admin-auth/webauthn/login-options', { method: 'POST', body: { email } });
+    const options = await api('/admin-auth/webauthn/login-options', { method: 'POST', body: {} });
 
     const publicKey = {
       ...options,
@@ -167,15 +165,24 @@ async function submitPasskeyLogin() {
       clientExtensionResults: assertion.getClientExtensionResults ? assertion.getClientExtensionResults() : {},
     };
 
-    await api('/admin-auth/webauthn/login-verify', { method: 'POST', body: { userId, credential: credentialJson } });
+    await api('/admin-auth/webauthn/login-verify', { method: 'POST', body: { credential: credentialJson } });
     toast('パスキーでログインしました');
     init();
   } catch (e) {
-    toast(`パスキーログインに失敗しました: ${e.message}`);
+    toast(e && e.name === 'NotAllowedError' ? 'パスキーでの認証がキャンセルされました' : `パスキーログインに失敗しました: ${e.message}`);
   }
 }
 
 // ---------- パスキー登録（ログイン後の操作） ----------
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : '端末';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome'
+    : /Safari\//.test(ua) ? 'Safari' : 'ブラウザ';
+  return `${os} / ${br}`;
+}
+
 async function registerPasskey() {
   if (!window.PublicKeyCredential) { toast('このブラウザはパスキーに対応していません'); return; }
   try {
@@ -204,11 +211,12 @@ async function registerPasskey() {
 
     await api('/admin-auth/webauthn/register-verify', {
       method: 'POST',
-      body: { credential: credentialJson, label: navigator.userAgent.slice(0, 60) },
+      body: { credential: credentialJson, label: deviceLabel() },
     });
     toast('パスキーを登録しました');
+    if (state.tab === 'passkeys') renderPasskeys();
   } catch (e) {
-    toast(`パスキー登録に失敗しました: ${e.message}`);
+    toast(e && e.name === 'NotAllowedError' ? 'パスキーの登録がキャンセルされました' : `パスキー登録に失敗しました: ${e.message}`);
   }
 }
 
@@ -218,7 +226,6 @@ function render() {
     <div class="admin-header">
       <h1>🛠 デモトレード管理画面</h1>
       <div class="actions">
-        <button class="btn-link" id="register-passkey-btn">🔑 このブラウザにパスキーを登録</button>
         <button class="btn-link" id="admin-logout-btn">ログアウト</button>
         <a href="/" class="btn-link">アプリへ戻る</a>
       </div>
@@ -227,12 +234,12 @@ function render() {
       <button data-t="users" class="${state.tab === 'users' ? 'active' : ''}">ユーザー管理</button>
       <button data-t="symbols" class="${state.tab === 'symbols' ? 'active' : ''}">銘柄管理</button>
       <button data-t="topup" class="${state.tab === 'topup' ? 'active' : ''}">現金申請</button>
+      <button data-t="passkeys" class="${state.tab === 'passkeys' ? 'active' : ''}">パスキー</button>
     </div>
     <div class="admin-panel" id="admin-panel"></div>
   `;
   document.querySelectorAll('.admin-tabs button').forEach((b) =>
     b.addEventListener('click', () => { state.tab = b.dataset.t; render(); }));
-  document.getElementById('register-passkey-btn').addEventListener('click', registerPasskey);
   document.getElementById('admin-logout-btn').addEventListener('click', async () => {
     try { await api('/admin-auth/logout', { method: 'POST' }); } catch { /* noop */ }
     init();
@@ -241,6 +248,53 @@ function render() {
   if (state.tab === 'users') renderUsers();
   if (state.tab === 'symbols') renderSymbols();
   if (state.tab === 'topup') renderTopupRequests();
+  if (state.tab === 'passkeys') renderPasskeys();
+}
+
+// ---------- パスキー管理（管理画面用） ----------
+function formatEpoch(sec) {
+  if (!sec) return '—';
+  return new Date(sec * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+}
+
+async function renderPasskeys() {
+  const panel = document.getElementById('admin-panel');
+  panel.innerHTML = adminSkeleton(2);
+  let credentials = [];
+  try {
+    ({ credentials } = await api('/admin-auth/webauthn/credentials'));
+  } catch (e) {
+    panel.textContent = `パスキーを取得できませんでした: ${e.message}`;
+    return;
+  }
+  if (state.tab !== 'passkeys') return;
+  panel.innerHTML = `
+    <p class="muted-note">管理画面用のパスキーです（標準アプリのパスキーとは別管理）。登録すると、ログイン画面でメールアドレスを入力せずにログインできます。パスワードでのログインは常に可能です。</p>
+    <table class="admin-table">
+      <thead><tr><th>端末</th><th>登録日時</th><th>最終利用</th><th></th></tr></thead>
+      <tbody>
+        ${credentials.length ? credentials.map((c) => `
+          <tr>
+            <td>${escapeHtml(c.label || '（名称なし）')}</td>
+            <td>${escapeHtml(formatEpoch(c.created_at))}</td>
+            <td>${escapeHtml(formatEpoch(c.last_used_at))}</td>
+            <td class="actions"><button class="danger" data-pk-del="${escapeHtml(c.id)}">削除</button></td>
+          </tr>`).join('') : '<tr><td colspan="4">登録されているパスキーはありません</td></tr>'}
+      </tbody>
+    </table>
+    <p><button class="btn btn-primary" id="pk-add-btn">＋ この端末のパスキーを追加</button></p>
+  `;
+  document.getElementById('pk-add-btn').addEventListener('click', registerPasskey);
+  panel.querySelectorAll('[data-pk-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('このパスキーを削除しますか？（端末側のパスキーは別途削除してください）')) return;
+    try {
+      await api(`/admin-auth/webauthn/credentials/${encodeURIComponent(b.dataset.pkDel)}`, { method: 'DELETE' });
+      toast('削除しました');
+    } catch (e) {
+      toast(`削除できませんでした: ${e.message}`);
+    }
+    renderPasskeys();
+  }));
 }
 
 // ---------- ユーザー管理 ----------

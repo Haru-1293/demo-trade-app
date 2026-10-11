@@ -23,10 +23,6 @@ import type { Env, WebauthnCredentialRow } from '../types';
 
 const CHALLENGE_TTL_SECONDS = 300; // 5分
 
-function challengeKey(kind: 'reg' | 'auth', userId: string): string {
-  return `webauthn_challenge:${kind}:${userId}`;
-}
-
 /**
  * WebAuthnのオリジン比較は完全一致（ブラウザが送るclientDataJSONのoriginは末尾スラッシュ無し）。
  * 環境変数の設定ミス（末尾の"/"付きURLをそのままコピペした場合など）で
@@ -56,122 +52,6 @@ function uint8ArrayToBase64url(bytes: Uint8Array): string {
   let bin = '';
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-export async function createRegistrationOptions(
-  env: Env,
-  userId: string,
-  email: string,
-  existingCredentials: WebauthnCredentialRow[],
-) {
-  const options = await generateRegistrationOptions({
-    rpName: env.WEBAUTHN_RP_NAME,
-    rpID: normalizeRpId(env.WEBAUTHN_RP_ID),
-    userID: new TextEncoder().encode(userId) as Uint8Array<ArrayBuffer>,
-    userName: email,
-    attestationType: 'none',
-    excludeCredentials: existingCredentials.map((c) => ({
-      id: c.credential_id,
-      transports: c.transports ? JSON.parse(c.transports) : undefined,
-    })),
-  });
-  // generateRegistrationOptions自体は expectedOrigin との突合せをしないため例外は起きにくいが、
-  // rpID が空文字列等だと内部でエラーになりうるため、呼び出し元(ルートハンドラ)でも
-  // try/catchしてJSONエラーとして返すこと（500を素通しさせない）。
-
-  await env.RATE_LIMIT_KV.put(challengeKey('reg', userId), options.challenge, {
-    expirationTtl: CHALLENGE_TTL_SECONDS,
-  });
-
-  return options;
-}
-
-export async function verifyRegistration(
-  env: Env,
-  userId: string,
-  response: RegistrationResponseJSON,
-): Promise<{ verified: boolean; credentialId?: string; publicKeyB64url?: string; counter?: number; transports?: string[]; error?: string }> {
-  const expectedChallenge = await env.RATE_LIMIT_KV.get(challengeKey('reg', userId));
-  if (!expectedChallenge) return { verified: false, error: 'challenge expired or not found' };
-
-  let verification;
-  try {
-    verification = await verifyRegistrationResponse({
-      response,
-      expectedChallenge,
-      expectedOrigin: normalizeOrigin(env.WEBAUTHN_ORIGIN),
-      expectedRPID: normalizeRpId(env.WEBAUTHN_RP_ID),
-    });
-  } catch (e) {
-    // WEBAUTHN_RP_ID/WEBAUTHN_ORIGIN が実際のデプロイ先ドメインと一致していない場合、
-    // @simplewebauthn/server はエラーをthrowする。ここで捕捉せず素通しすると
-    // ルートハンドラ側で未捕捉例外となりHTTP 500になってしまうため、必ず捕捉する。
-    return { verified: false, error: e instanceof Error ? e.message : String(e) };
-  }
-
-  if (!verification.verified || !verification.registrationInfo) {
-    return { verified: false, error: 'verification returned not verified' };
-  }
-
-  const { credential } = verification.registrationInfo;
-  return {
-    verified: true,
-    credentialId: credential.id,
-    publicKeyB64url: uint8ArrayToBase64url(credential.publicKey),
-    counter: credential.counter,
-    transports: response.response.transports,
-  };
-}
-
-export async function createAuthenticationOptions(
-  env: Env,
-  userId: string,
-  credentials: WebauthnCredentialRow[],
-) {
-  const options = await generateAuthenticationOptions({
-    rpID: normalizeRpId(env.WEBAUTHN_RP_ID),
-    allowCredentials: credentials.map((c) => ({
-      id: c.credential_id,
-      transports: c.transports ? JSON.parse(c.transports) : undefined,
-    })),
-  });
-
-  await env.RATE_LIMIT_KV.put(challengeKey('auth', userId), options.challenge, {
-    expirationTtl: CHALLENGE_TTL_SECONDS,
-  });
-
-  return options;
-}
-
-export async function verifyAuthentication(
-  env: Env,
-  userId: string,
-  response: AuthenticationResponseJSON,
-  storedCredential: WebauthnCredentialRow,
-): Promise<{ verified: boolean; newCounter?: number; error?: string }> {
-  const expectedChallenge = await env.RATE_LIMIT_KV.get(challengeKey('auth', userId));
-  if (!expectedChallenge) return { verified: false, error: 'challenge expired or not found' };
-
-  let verification;
-  try {
-    verification = await verifyAuthenticationResponse({
-      response,
-      expectedChallenge,
-      expectedOrigin: normalizeOrigin(env.WEBAUTHN_ORIGIN),
-      expectedRPID: normalizeRpId(env.WEBAUTHN_RP_ID),
-      credential: {
-        id: storedCredential.credential_id,
-        publicKey: base64urlToUint8Array(storedCredential.public_key) as Uint8Array<ArrayBuffer>,
-        counter: storedCredential.counter,
-        transports: storedCredential.transports ? JSON.parse(storedCredential.transports) : undefined,
-      },
-    });
-  } catch (e) {
-    return { verified: false, error: e instanceof Error ? e.message : String(e) };
-  }
-
-  if (!verification.verified) return { verified: false, error: 'verification returned not verified' };
-  return { verified: true, newCounter: verification.authenticationInfo.newCounter };
 }
 
 // =====================================================================
@@ -215,13 +95,18 @@ export async function createUserRegistrationOptions(
   env: Env,
   user: { id: string; username: string },
   existingCredentials: WebauthnCredentialRow[],
+  scope: 'USER' | 'ADMIN' = 'USER',
 ) {
+  // 管理画面用は表示名を分ける（パスワードマネージャーの一覧で見分けやすくする）。
+  // ※同一アカウントで標準用と管理画面用を両方登録した際に端末側で上書きされる場合があるが、
+  //   これはパスワードマネージャー（認証器）側の仕様でありアプリ側では制御できない（仕様書4.16）。
+  const displayName = scope === 'ADMIN' ? `${user.username}（管理画面）` : user.username;
   const options = await generateRegistrationOptions({
     rpName: USER_RP_NAME,
     rpID: normalizeRpId(env.WEBAUTHN_RP_ID),
     userID: new TextEncoder().encode(user.id) as Uint8Array<ArrayBuffer>,
-    userName: user.username,
-    userDisplayName: user.username,
+    userName: displayName,
+    userDisplayName: displayName,
     attestationType: 'none',
     authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
     excludeCredentials: existingCredentials.map((c) => ({

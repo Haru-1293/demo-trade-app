@@ -10,7 +10,7 @@
 - 外部データ: Yahoo Finance Chart API（`query1`/`query2`フォールバック、60秒キャッシュ、成行・指値の約定判定用）
 - ライブ株価表示（表示専用）: Yahoo Finance WSSをWorker経由でパススルー中継（`/api/live-prices`）
 - 銘柄マスタ自動同期: JPX公開の上場会社一覧(xlsx) + SEC `company_tickers.json`、毎日08:30(JST)にCronで更新
-- 管理画面: 通常アプリとは独立したセッション。メール+パスワード or パスキー(WebAuthn、`@simplewebauthn/server`)
+- 管理画面: 通常アプリとは独立したセッション。メール+パスワード or パスキー(WebAuthn、`@simplewebauthn/server`、メール入力なしでログイン可。パスキーはダッシュボードの「パスキー」タブで一覧・追加・削除)
 
 ## セットアップ
 
