@@ -558,3 +558,26 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .sk-w50 { width: 50px; } .sk-w70 { width: 70px; } .sk-w80 { width: 80px; }
 .sk-w110 { width: 110px; } .sk-w150 { width: 150px; }
 .sk-w56 { width: 56px; } .sk-w45p { width: 45%; } .sk-w75p { width: 75%; }
+
+/* ---------- OAuth承認画面（oauth-consent.html）・連携アプリ（仕様書4.17） ---------- */
+.consent-screen { width: 100%; max-width: 420px; margin: 0 auto; padding: 28px 20px 40px; }
+.consent-screen h2 { font-size: 18px; margin: 0 0 4px; text-align: center; }
+.consent-lead { text-align: center; font-size: 13px; color: var(--text-sub); margin: 0 0 16px; line-height: 1.6; }
+.consent-app { font-size: 17px; font-weight: 700; text-align: center; word-break: break-word; margin: 6px 0 2px; }
+.consent-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #fff3cd; color: #7a5b00; margin: 0 auto 10px; }
+.consent-center { text-align: center; }
+.consent-meta { font-size: 12px; color: var(--text-sub); line-height: 1.7; margin: 0 0 10px; word-break: break-all; }
+.consent-warn { font-size: 12px; line-height: 1.6; background: #fff3cd; color: #7a5b00; border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; }
+.consent-error { font-size: 13px; line-height: 1.6; background: #ffe5e8; color: #a3000f; border-radius: 10px; padding: 12px; margin: 0 0 12px; word-break: break-word; }
+.consent-user { font-size: 12px; color: var(--text-sub); text-align: center; margin: 14px 0 0; }
+.consent-perm { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.consent-perm:last-child { border-bottom: none; }
+.consent-perm input { width: 20px; height: 20px; margin-top: 2px; flex: none; accent-color: var(--primary); }
+.consent-perm .perm-title { font-size: 14px; font-weight: 700; }
+.consent-perm .perm-desc { font-size: 12px; color: var(--text-sub); line-height: 1.5; margin-top: 2px; }
+.consent-perm .perm-danger { font-size: 12px; color: var(--danger); font-weight: 700; margin-top: 2px; }
+.consent-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.consent-done { text-align: center; font-size: 14px; line-height: 1.8; padding: 24px 0; }
+.copy-box { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+.copy-box input { flex: 1; min-width: 0; font-size: 12px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fafafa; color: var(--text); }
+.copy-box .btn { width: auto; padding: 9px 14px; font-size: 13px; }

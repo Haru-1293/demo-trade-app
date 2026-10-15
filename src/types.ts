@@ -49,6 +49,14 @@ export interface Env {
 
   // パスワード変更通知メールの送信元アドレス（Email Routingで検証済みのアドレスである必要がある）
   EMAIL_FROM_ADDRESS: string;
+
+  // リモートMCPサーバー / OAuth（仕様書4.17・4.18）。いずれも未設定なら既定値
+  /** /mcp に Origin 付きで来てよい自サイト以外のオリジン（カンマ区切り）。既定 https://claude.ai,https://claude.com */
+  MCP_ALLOWED_ORIGINS?: string;
+  /** 1ユーザーが直近60秒に出せる注文数の上限（MCP経由）。既定10 */
+  MCP_ORDER_RATE_LIMIT_PER_MIN?: string;
+  /** アクセストークンの有効秒数。既定3600 */
+  OAUTH_ACCESS_TOKEN_TTL_SECONDS?: string;
 }
 
 export interface UserRow {

@@ -71,8 +71,26 @@ function usd(amountC) {
 // ---------- Root render ----------
 const app = document.getElementById('app');
 
+// ログイン後の戻り先（OAuth承認画面から来たときだけ。同一サイトのこの画面以外は受け付けない＝オープンリダイレクト防止、仕様書4.17）
+function safeNextUrl() {
+  const raw = new URLSearchParams(location.search).get('next');
+  if (!raw || raw.length > 4096) return null;
+  try {
+    const u = new URL(raw, location.origin);
+    if (u.origin !== location.origin) return null;
+    if (u.pathname !== '/oauth-consent.html') return null;
+    return u.pathname + u.search;
+  } catch {
+    return null;
+  }
+}
+
 function render() {
   document.body.classList.toggle('logged-in', isLoggedIn());
+  if (isLoggedIn()) {
+    const next = safeNextUrl();
+    if (next) { location.replace(next); return; }
+  }
   if (!isLoggedIn()) {
     disconnectLiveFeed();
     renderAuth();
@@ -1213,6 +1231,16 @@ function renderSettings(main) {
           : '<p class="muted-text">このブラウザはパスキーに対応していません。</p>'}
       </div>
 
+      <div class="section-title">連携アプリ（AI）</div>
+      <div class="card">
+        <p class="muted-text">Claudeなど、MCPに対応したAIアプリを、あなたのデモ口座につなげられます。アプリ側に下のURLを登録すると、この画面と同じログイン・承認の流れで接続できます。権限（閲覧のみ／注文も可）は接続のたびに選べます。</p>
+        <div class="copy-box">
+          <input type="text" id="mcp-url" readonly value="${escapeHtml(location.origin + '/mcp')}" aria-label="MCPサーバーのURL">
+          <button type="button" class="btn btn-outline" id="mcp-url-copy">コピー</button>
+        </div>
+        <div id="grant-list" aria-busy="true">${skeletonRows(1)}</div>
+      </div>
+
       <div class="section-title">アカウント</div>
       <button class="btn btn-outline" id="logout-btn">ログアウト</button>
 
@@ -1224,6 +1252,12 @@ function renderSettings(main) {
   const addBtn = document.getElementById('passkey-add-btn');
   if (addBtn) addBtn.addEventListener('click', registerPasskey);
   loadPasskeyList();
+  loadGrantList();
+  document.getElementById('mcp-url-copy').addEventListener('click', async () => {
+    const input = document.getElementById('mcp-url');
+    try { await navigator.clipboard.writeText(input.value); toast('URLをコピーしました'); }
+    catch { input.select(); toast('URLを選択しました。コピーしてください'); }
+  });
   document.getElementById('pass-submit').addEventListener('click', async () => {
     const currentPassword = document.getElementById('cur-pass').value;
     const newPassword = document.getElementById('new-pass').value;
@@ -1381,6 +1415,47 @@ async function deletePasskey(id) {
     toast(`削除に失敗しました: ${e.message}`);
   }
   loadPasskeyList();
+}
+
+// ---------- 連携アプリ（OAuth / MCP、仕様書4.17） ----------
+const SCOPE_LABELS = {
+  'portfolio:read': '資産・履歴の閲覧',
+  'market:read': '銘柄・現在値の閲覧',
+  'trade:write': '注文の発注・取消',
+};
+
+async function loadGrantList() {
+  const box = document.getElementById('grant-list');
+  if (!box) return;
+  try {
+    const { grants } = await api('/oauth/grants');
+    if (!document.getElementById('grant-list')) return; // 画面遷移済み
+    box.removeAttribute('aria-busy');
+    box.innerHTML = grants.length ? grants.map((g) => `
+      <div class="list-row">
+        <div>
+          <div class="name">🤖 ${escapeHtml(g.client_name)}</div>
+          <div class="sub">${g.host ? escapeHtml(g.host) + ' ・ ' : ''}${g.scopes.map((s) => escapeHtml(SCOPE_LABELS[s] || s)).join('、')}</div>
+          <div class="sub">接続 ${formatUnixDateTime(g.connected_at)} ・ 最終利用 ${g.last_used_at ? formatUnixDateTime(g.last_used_at) : 'なし'}</div>
+        </div>
+        <button type="button" class="link-btn danger" data-grant-revoke="${escapeHtml(g.id)}">取り消す</button>
+      </div>`).join('') : '<div class="empty-hint">連携中のアプリはありません</div>';
+    box.querySelectorAll('[data-grant-revoke]').forEach((b) => b.addEventListener('click', () => revokeGrantUi(b.dataset.grantRevoke)));
+  } catch (e) {
+    box.removeAttribute('aria-busy');
+    box.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function revokeGrantUi(id) {
+  if (!confirm('このアプリの接続を取り消しますか？（アプリはすぐにアクセスできなくなります）')) return;
+  try {
+    await api(`/oauth/grants/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    toast('取り消しました');
+  } catch (e) {
+    toast(`取り消せませんでした: ${e.message}`);
+  }
+  loadGrantList();
 }
 
 // ---------- アカウント削除 ----------

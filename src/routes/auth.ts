@@ -190,6 +190,11 @@ app.post('/account/delete', requireCsrf, requireAuth, async (c) => {
     c.env.DB.prepare(`UPDATE users SET status = 'DELETED', updated_at = ? WHERE id = ?`)
       .bind(Math.floor(Date.now() / 1000), uid),
     c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(uid),
+    // 外部アプリ（MCP）への許可も失効する（仕様書4.17）
+    c.env.DB.prepare(`DELETE FROM oauth_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE user_id = ?)`).bind(uid),
+    c.env.DB.prepare(`DELETE FROM oauth_codes WHERE grant_id IN (SELECT id FROM oauth_grants WHERE user_id = ?)`).bind(uid),
+    c.env.DB.prepare(`UPDATE oauth_grants SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`)
+      .bind(Math.floor(Date.now() / 1000), uid),
   ]);
 
   const cookieName = c.env.SESSION_COOKIE_NAME || 'session';

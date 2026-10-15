@@ -11,9 +11,13 @@ import cashTopupRoutes from './routes/cashTopup';
 import pricesRoutes from './routes/prices';
 import passkeyRoutes from './routes/passkey';
 import adminAuthRoutes from './routes/adminAuth';
+import oauthRoutes from './routes/oauth';
+import oauthApiRoutes from './routes/oauthApi';
+import mcpRoutes from './routes/mcp';
 import { requireAuth } from './middleware/auth';
 import { syncSymbols } from './services/symbolSync';
 import { takeAssetSnapshots } from './services/snapshot';
+import { cleanupOauth } from './services/oauth';
 import { SECURITY_HEADERS } from './services/securityHeaders';
 import { sanitizeClientMessage } from './services/liveFilter';
 import { HTTPException } from 'hono/http-exception';
@@ -50,6 +54,12 @@ app.route('/api/passkey', passkeyRoutes);
 app.route('/api/fx', fxRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/admin-auth', adminAuthRoutes);
+// 承認画面・設定画面の「連携アプリ」が使うAPI（Cookieセッション。仕様書4.17）
+app.route('/api', oauthApiRoutes);
+
+// OAuth 2.0 認可サーバーとリモートMCPサーバー（ベアラートークン。仕様書4.17・4.18）。/api/* とは認証方式が別
+app.route('/', oauthRoutes);
+app.route('/', mcpRoutes);
 
 // USE_WORKER_PROXY=true の間だけ有効な市場データプロキシ（仕様書5.）
 const ALLOWED_PROXY_HOSTS = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
@@ -234,5 +244,7 @@ export default {
         })
         .catch((e) => console.error('asset snapshot failed', e)),
     );
+    // 期限切れのOAuthコード・トークン等を掃除する（仕様書4.17）
+    ctx.waitUntil(cleanupOauth(env).catch((e) => console.error('oauth cleanup failed', e)));
   },
 };
