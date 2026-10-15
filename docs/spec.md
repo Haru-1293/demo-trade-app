@@ -1,6 +1,19 @@
 # 日米対応デモトレードシステム 全体詳細仕様書
 
-**文書版数:** 2.8 **仕様確定日:** 2026年9月13日（v2.2 改訂: 2026年9月13日 / v2.3 改訂: 2026年10月2日 / v2.4 改訂: 2026年10月3日 / v2.5 改訂: 2026年10月4日 / v2.6 改訂: 2026年10月6日 / v2.7 改訂: 2026年10月7日 / v2.8 改訂: 2026年10月11日） **対象フェーズ:** MVP **用途:** 学習、デモ、シミュレーション専用
+**文書版数:** 2.9 **仕様確定日:** 2026年9月13日（v2.2 改訂: 2026年9月13日 / v2.3 改訂: 2026年10月2日 / v2.4 改訂: 2026年10月3日 / v2.5 改訂: 2026年10月4日 / v2.6 改訂: 2026年10月6日 / v2.7 改訂: 2026年10月7日 / v2.8 改訂: 2026年10月11日 / v2.9 改訂: 2026年10月13日） **対象フェーズ:** MVP **用途:** 学習、デモ、シミュレーション専用
+
+### v2.9 での変更点（v2.8 からの差分、リモートMCPサーバーとOAuth 2.0承認画面）
+- **リモートMCPサーバー（`POST /mcp`）を追加**。Claude等のMCPクライアントから、ユーザー本人の代理でデモ口座の閲覧・注文ができる。ツールは9個（資産サマリー・保有・注文履歴・取引履歴・銘柄検索・現在値・成行注文・指値注文・注文取消）。プロトコルは最新の**2026-07-28（リクエスト単位のステートレス方式）と、従来の`initialize`方式（2025-11-25 / 2025-06-18 / 2025-03-26）の両対応**（4.18）
+- **OAuth 2.0認可サーバーを同じWorkerに追加**し、MCPサーバーの認可に使う。認可コード＋PKCE（S256のみ）、リフレッシュトークンのローテーション、`resource`（RFC 8707）による宛先固定、`iss`（RFC 9207）付与。クライアント登録は**Client ID Metadata Documents（CIMD）とDynamic Client Registration（DCR）の両対応**（4.17）
+- **承認画面（`/oauth-consent.html`）を追加**。接続先アプリ名（自己申告・未検証）、戻り先のホスト、許可する権限を表示し、**権限ごとに許可・不許可を選べる**。注文系の権限（`trade:write`）は初期状態でOFF（4.17）
+- **設定画面に「連携アプリ」を追加**。MCPサーバーのURL表示、許可済みアプリの一覧と取り消し（4.17）
+- 権限（スコープ）は3つ：`portfolio:read`（資産・保有・履歴の閲覧）、`market:read`（銘柄検索・現在値）、`trade:write`（注文の発注・取消）。ツール一覧は、付与された権限で使えるものだけを返す
+- **新しいシークレットは不要**（承認リクエストは状態を持たず、承認時にサーバーが全項目を再検証する）。トークンはD1にSHA-256のハッシュだけを保存する
+- 注文の実処理を `routes/orders.ts` から `services/orderService.ts` に切り出し、Web画面（`/api/orders/*`）とMCPツールが**同じ処理**を使う。**注文の取消だけ、同時に2回呼ばれても返金が二重にならないよう修正**（状態更新を `WHERE status='PENDING'` に限り、返却は直前の更新が成功したときだけ行う）
+- マイグレーション `0014_oauth.sql` を追加（`oauth_clients` / `oauth_grants` / `oauth_codes` / `oauth_tokens`）
+- Cron（毎日08:30 JST）で、期限切れのコード・トークンと使われていない登録クライアントを掃除する。アカウント削除時は、そのユーザーの許可をすべて失効する
+- 新しい変数（`wrangler.json`）: `MCP_ALLOWED_ORIGINS`、`MCP_ORDER_RATE_LIMIT_PER_MIN`（任意で `OAUTH_ACCESS_TOKEN_TTL_SECONDS`）
+- **変更しないもの:** `/api/*` はこれまでどおりCookieセッションのみ（ベアラートークンは受け付けない）。`/mcp` はベアラートークンのみ（Cookieは受け付けない）。管理画面の認証。既存のパスワード・パスキーでのログイン
 
 ### v2.8 での変更点（v2.7 からの差分、管理画面のパスキー改善）
 - **管理画面のパスキーも、メールアドレス入力なしでログイン可能**にした。標準アプリと同じ discoverable credential 方式（`allowCredentials` なし、`userVerification: required`）で、`login-options` は入力不要、`login-verify` は `{credential}` のみ（4.5.1）
@@ -166,6 +179,12 @@ Worker (初期) / Rules (将来)
 
 フラグ (`USE_WORKER_PROXY`) により動的切り替え
 
+外部AI連携（v2.9）
+
+Cloudflare Workers（`/mcp`、`/oauth/*`、`/.well-known/*`）+ D1
+
+リモートMCPサーバーと、その認可に使うOAuth 2.0認可サーバー。承認画面は静的ファイル（`/oauth-consent.html`）
+
 ## 3. データベース仕様 (Cloudflare D1)
 
 ### 3.1 テーブル定義
@@ -284,6 +303,37 @@ Worker (初期) / Rules (将来)
 - `challenge` (TEXT, PK, base64url), `kind` (TEXT): `'USER_REG'`（登録時）/ `'USER_AUTH'`（ユーザー名なしログイン時）
 - `user_id` (TEXT, FK, NULL可): 登録時はログイン中のユーザー。ログイン時はユーザー未確定のため NULL。
 - `expires_at` (INTEGER): 発行から5分。使い捨てで、取り出した時点で削除する（`DELETE ... RETURNING`）。期限切れの行は、チャレンジ発行のたびに掃除する。
+
+**13. `oauth_clients`（OAuthクライアント、v2.9）**
+
+- `client_id` (TEXT, PK): DCRは `mcp_` ＋ランダム値、CIMDはクライアントのHTTPS URLそのもの
+- `kind` (TEXT): `'DCR'` / `'CIMD'`
+- `client_name` (TEXT): 自己申告の表示名（最大100文字、制御文字は除去）。**検証されていない値**として扱う
+- `redirect_uris` (TEXT, JSON配列): 登録済みの戻り先。認可リクエストの `redirect_uri` はここと完全一致が必須（ループバックのみポート違いを許可）
+- `client_uri` (TEXT, 任意): 自己申告のWebサイト（表示のみ。リンクにはしない）
+- `registered_ip_hash` (TEXT, 任意): DCRの登録元IPの `SHA-256`（濫用対策のレート制限用。IPそのものは保存しない）
+- `created_at` (INTEGER), `fetched_at` (INTEGER): CIMDのメタデータ文書を最後に取得した時刻（DCRは登録時刻）
+
+**14. `oauth_grants`（ユーザーがクライアントに与えた許可、v2.9）**
+
+- `id` (TEXT, PK), `user_id` (TEXT, FK), `client_id` (TEXT, FK)
+- `scope` (TEXT): ユーザーが承認画面で許可した権限（空白区切り）
+- `resource` (TEXT): トークンの宛先（`https://<このサイト>/mcp`）
+- `created_at` (INTEGER), `activated_at` (INTEGER, NULL可): 認可コードが最初に使われた時刻。**NULLの間は連携アプリ一覧に出さない**
+- `last_used_at` (INTEGER, NULL可): 最後にアクセストークンが使われた時刻（書き込み回数を抑えるため、5分以上空いたときだけ更新）
+- `revoked_at` (INTEGER, NULL可): 取り消した時刻
+
+**15. `oauth_codes`（認可コード、v2.9）**
+
+- `code_hash` (TEXT, PK, SHA-256), `grant_id` (TEXT, FK), `redirect_uri` (TEXT), `code_challenge` (TEXT, PKCE S256)
+- `expires_at` (INTEGER): 発行から120秒。`used_at` (INTEGER): 使用済みの時刻（1回限り）
+
+**16. `oauth_tokens`（アクセストークン・リフレッシュトークン、v2.9）**
+
+- `token_hash` (TEXT, PK, SHA-256。**トークンそのものは保存しない**), `grant_id` (TEXT, FK)
+- `kind` (TEXT): `'ACCESS'`（既定1時間）/ `'REFRESH'`（30日）、`scope` (TEXT): このトークンの権限
+- `expires_at` (INTEGER), `used_at` (INTEGER): リフレッシュトークンが使われた時刻（ローテーション済みの印）, `created_at` (INTEGER)
+- マイグレーション `0014_oauth.sql`。
 
 ## 4. 機能仕様および処理フロー
 
@@ -515,6 +565,120 @@ Worker (初期) / Rules (将来)
 - **UI:** ログイン画面（ログインモードのみ）に「🔑 パスキーでログイン」、設定画面に「パスキー」セクション（一覧、「＋ この端末のパスキーを追加」、削除）。パスキー非対応のブラウザでは、ログイン画面のボタンを出さず、設定画面に非対応の旨を表示する。
 - **変更しないもの:** パスワードでのログイン（Turnstile必須）、管理画面のログイン手順とそのチャレンジ保存（KV）。
 
+### 4.17 OAuth 2.0 認可サーバーと承認画面（v2.9）
+
+外部のAIクライアント（MCPクライアント）が、ユーザー本人の代理でデモ口座にアクセスするための認可。**`/mcp`（4.18）が保護リソース、同じWorkerが認可サーバーを兼ねる**。実装は `routes/oauth.ts`（公開エンドポイント）、`routes/oauthApi.ts`（承認画面用・要ログイン）、`services/oauth.ts`。準拠する仕様: OAuth 2.1 ドラフト（認可コード＋PKCE `S256` のみ。implicit・password・`plain` は提供しない）、RFC 8414（サーバーメタデータ）、RFC 9728（保護リソースメタデータ）、RFC 7591（DCR）、RFC 8707（`resource`）、RFC 9207（`iss`）、RFC 7009（取り消し）、OAuth Client ID Metadata Documents、MCP認可仕様（2026-07-28）。
+
+**エンドポイント**（`issuer` は常にリクエストのオリジン。末尾スラッシュなし。`resource` は `<issuer>/mcp`）
+
+| パス | 役割 |
+|---|---|
+| `GET /.well-known/oauth-protected-resource`（および `/mcp` を付けたパス挿入形） | 保護リソースメタデータ（`resource`・`authorization_servers`・`scopes_supported`・`bearer_methods_supported`） |
+| `GET /.well-known/oauth-authorization-server`（`/.well-known/openid-configuration` にも同じ内容） | 認可サーバーメタデータ。`code_challenge_methods_supported: ["S256"]`、`token_endpoint_auth_methods_supported: ["none"]`、`authorization_response_iss_parameter_supported: true`、`client_id_metadata_document_supported: true` |
+| `POST /oauth/register` | DCR（RFC 7591）。公開クライアントのみ |
+| `GET /oauth/authorize` | 認可リクエストの検証。問題なければ承認画面へ302 |
+| `GET /oauth-consent.html` | 承認画面（静的ファイル） |
+| `GET /api/oauth/authorization-info` | 承認画面用。リクエストを再検証し、表示内容（アプリ名・戻り先・権限）を返す（要ログイン） |
+| `POST /api/oauth/decision` | 承認画面用。許可／拒否を受け、戻り先URLをJSONで返す（要ログイン・要CSRF） |
+| `POST /oauth/token` | 認可コードまたはリフレッシュトークンからトークンを発行 |
+| `POST /oauth/revoke` | トークンの取り消し（RFC 7009） |
+| `GET /api/oauth/grants` / `DELETE /api/oauth/grants/:id` | 設定画面の「連携アプリ」（要ログイン、削除は要CSRF） |
+
+**クライアント登録**
+
+- **CIMD:** `client_id` が `https://` のURLなら、そのURLのJSON文書をサーバーが取得して検証する。`client_id` はHTTPSで、パスを持ち、フラグメント・ユーザー情報・`.`/`..` を含まず、ポートは既定（443）のみ。ホスト名がIPアドレス・`localhost`・`.local`/`.internal` 等のものは拒否。文書の `client_id` はURLと完全一致、`client_name`・`redirect_uris`（1〜10件）が必須、`client_secret`・共有シークレット方式の `token_endpoint_auth_method` は禁止（`none` のみ）。取得は5秒・16KBまで・リダイレクト不可・JSON以外は拒否。結果は `oauth_clients` に1時間キャッシュし、失敗した文書は保存しない（更新に失敗した場合は、保存済みの有効な内容を24時間まで使う）。
+- **DCR:** `POST /oauth/register`（JSON、10KBまで）。`redirect_uris` は1〜5件、`client_name` は100文字まで。要求された `token_endpoint_auth_method` が `none` 以外でも `none` として登録し、応答に実際の値を返す（RFC 7591）。**濫用対策:** 同じIPから1時間に10件、サイト全体で1日300件まで（`429`）。連携の無い登録は30日後にCronで削除する。
+
+**戻り先URI（`redirect_uri`）**
+
+- 登録済みのURIと**完全一致**が必須。例外として、ループバック（`localhost`・`127.0.0.1`・`[::1]` の `http://`）はポート番号の違いを許可する（RFC 8252）。
+- 許可する形: `https://`、ループバックの `http://`、アプリ独自スキーム（`cursor://…` など）。`javascript:`・`data:`・`vbscript:`・`file:`・`blob:`・`about:`・`ftp:`・`ws(s):`・`mailto:`・`tel:`・ループバック以外の `http:` は登録できない。フラグメント・ユーザー情報を含むURIは不可。
+- `client_id` または `redirect_uri` が不正なときは、**戻り先へリダイレクトせず**、エラーを画面に表示する（オープンリダイレクト防止）。それ以外の不備（`invalid_scope`・`invalid_request` 等）は、`error`・`state`・`iss` を付けて戻り先へ返す。
+
+**認可リクエスト（`GET /oauth/authorize`）**
+
+- 必須: `response_type=code`、`client_id`、`redirect_uri`、`code_challenge`（43文字のbase64url）、`code_challenge_method=S256`。任意: `state`（512文字まで）、`scope`（省略時は読み取り2種）、`resource`（指定するなら `<issuer>/mcp` と一致。不一致は `invalid_target`）。
+- 承認画面へは、受け取ったクエリ文字列をそのまま引き継いで302する（**サーバーに承認待ちの状態を保存しない**。このため書き込みも新しいシークレットも要らない）。承認画面・決定のAPIは、同じ検証を毎回行う。
+
+**承認画面（`/oauth-consent.html`、`oauth-consent.js`）**
+
+- 未ログインなら、`/?next=<この画面のURL>` へ移動してアプリのログイン画面（パスワード＋Turnstile、またはパスキー）を出し、ログイン後に承認画面へ戻る。`next` は同一サイトの `/oauth-consent.html` だけを許可する（オープンリダイレクト防止）。
+- 表示する内容: **アプリ名（「自己申告・未検証」と明示）**、CIMDなら `client_id` のホスト名、**戻り先のホスト名**（ループバックは「この端末上のアプリ」と警告、独自スキームは「アプリを開きます」）、ログイン中のユーザー名（「別のアカウントで続ける」でログアウトして戻れる）、要求された権限の一覧。
+- **権限ごとのチェックボックス。** 閲覧系（`portfolio:read`・`market:read`）は初期ON、**`trade:write` は初期OFF**で「デモ資金が動きます」と明示する。1つ以上選ばないと許可できない。
+- 「許可する」「キャンセル」はいずれも `POST /api/oauth/decision`（CSRF必須）へ送り、返ってきた戻り先URLへブラウザが移動する。戻り先への移動は `fetch` 経由のJSONで行う（`form-action 'self'` のCSPが、フォーム送信後の別ドメインへのリダイレクトを止めるため）。キャンセルは `error=access_denied`。
+- 承認のたびに必ず画面を出す（過去の許可を自動で再利用しない）。同じアプリを再接続すると、別の許可として追加される。1ユーザーの有効な連携は20件まで。
+
+**権限（スコープ）**
+
+| スコープ | 内容 | ツール |
+|---|---|---|
+| `portfolio:read` | 資産・保有・注文履歴・取引履歴の閲覧 | `get_account_summary`・`get_holdings`・`get_orders`・`get_trades` |
+| `market:read` | 銘柄検索・現在値の参照 | `search_symbols`・`get_prices` |
+| `trade:write` | 注文の発注・取消（**デモ資金が動く**） | `place_market_order`・`place_limit_order`・`cancel_order` |
+
+スコープは互いに包含しない。付与されたスコープは `oauth_grants.scope` に保存し、トークンの応答の `scope` に返す。
+
+**トークン（`POST /oauth/token`、`application/x-www-form-urlencoded`）**
+
+- `authorization_code`: `code`・`redirect_uri`・`client_id`・`code_verifier`（43〜128文字）を検証する。コードは**120秒・1回限り**。使用済みのコードが再び来たら、その許可（grant）を丸ごと失効する。`S256` の照合は定数時間で行う。
+- `refresh_token`: 使うたびに**ローテーション**する（新しいリフレッシュトークンを返し、古いものは使用済み）。**使用済みのリフレッシュトークンが再び来たら、その許可を丸ごと失効する**（公開クライアントのためOAuth 2.1の必須要件）。`scope` は元の許可の範囲内での縮小のみ可。
+- アクセストークンは既定**1時間**、リフレッシュトークンは**30日**。どちらもランダム32バイト、接頭辞は `dta_` / `dtr_`。**D1にはSHA-256のハッシュだけを保存**し、ログにも出さない。
+- 応答には `Cache-Control: no-store`・`Pragma: no-cache` を付ける。エラーはRFC 6749の形式（`error`・`error_description`）。
+- 発行・更新・利用のたびに、持ち主のアカウントが `ACTIVE` であることを確認する。**凍結・削除されたユーザーのトークンは、その場で使えなくなる**。
+
+**取り消し**
+
+- ユーザーは設定画面の「連携アプリ」から許可を取り消せる（その許可のトークンを全削除し、`revoked_at` を設定）。`POST /oauth/revoke` は、`client_id` が一致するときだけ、そのトークンの許可を丸ごと失効する（存在しないトークンでも `200`）。
+- アカウント削除（`POST /api/account/delete`）でも、そのユーザーの許可をすべて失効する。
+
+**掃除（Cron）:** 期限切れの認可コード・トークン、一度も使われなかった許可（1日後）、取り消し済みの許可（30日後）、連携の無いDCR登録・CIMDキャッシュ（30日後）を削除する。
+
+### 4.18 リモートMCPサーバー（v2.9）
+
+`POST /mcp`（`routes/mcp.ts`、`mcp/tools.ts`）。Streamable HTTPの単一エンドポイントで、**ベアラートークン（`Authorization: Bearer`）のみ**を受け付ける（Cookieは見ない）。認可は4.17。
+
+**プロトコル（新旧両対応）**
+
+- **モダン（2026-07-28）:** 各リクエストが `_meta` に `io.modelcontextprotocol/protocolVersion`・`clientCapabilities` を持つ。`MCP-Protocol-Version`・`Mcp-Method`（`tools/call` は `Mcp-Name` も、Base64記法 `=?base64?…?=` を復号）のヘッダーが本文と一致することを検証する。結果には `resultType: "complete"` と `_meta["io.modelcontextprotocol/serverInfo"]` を付ける。`tools/list` は `ttlMs`・`cacheScope: "private"`（見える一覧が権限で変わるため）を付ける。
+  - エラー: 未対応バージョン→`400`＋`-32022`（`data.supported`・`data.requested`）／ヘッダー不一致・欠落→`400`＋`-32020`／必須の`_meta`欠落→`400`＋`-32602`／未実装のメソッド→`404`＋`-32601`。
+- **従来（2025-11-25 / 2025-06-18 / 2025-03-26）:** `initialize` に応じて、セッションIDを発行せずに応答する（`Mcp-Session-Id` は付けず、受け取っても無視）。通知（`id` なし）は `202`。`ping` に応答。結果に `resultType` は付けない。`MCP-Protocol-Version` が無い要求は従来方式として扱う。
+- 両方で `server/discover`（モダン）／`initialize`（従来）／`tools/list`／`tools/call` を実装する。**宣言する機能は `tools` のみ**（`listChanged` なし）。リソース・プロンプト・`subscriptions/listen` は提供しない。
+- `GET`・`DELETE` は `405`。JSON-RPCのバッチ（配列）は `400`。本文は64KBまで。応答は常に単一のJSON（SSEは使わない）。
+- **Origin検証:** `Origin` ヘッダーがある場合、自サイト・`MCP_ALLOWED_ORIGINS`（既定 `https://claude.ai,https://claude.com`）以外は `403`。`Origin` が無い要求（サーバー間通信・CLI）は許可する。許可したOriginにだけCORSヘッダーを返し、`Access-Control-Allow-Credentials` は付けない。
+
+**認証・認可**
+
+- トークンが無い・無効・期限切れ・宛先（`resource`）が違う・持ち主が `ACTIVE` でない→`401`＋`WWW-Authenticate: Bearer resource_metadata="<…>/.well-known/oauth-protected-resource/mcp", scope="portfolio:read market:read trade:write"`（トークンがあるのに無効な場合は `error="invalid_token"` も付ける）。
+- スコープが足りないツール呼び出し→`403`＋`WWW-Authenticate: Bearer error="insufficient_scope", scope="<必要なスコープ>", resource_metadata=…`。**`tools/list` は、付与されたスコープで使えるツールだけを返す**（`trade:write` が無ければ注文系のツールは見えない）。
+- ユーザーの許可（grant）が取り消されると、その場で全トークンが無効になる。
+
+**ツール**（入力はJSON Schemaで定義し、結果は `content`（テキストのJSON）と `structuredContent` の両方で返す。金額は**通貨の本来の単位**（円・ドル）の数値で返す）
+
+| ツール | スコープ | 内容 |
+|---|---|---|
+| `get_account_summary` | `portfolio:read` | 円・ドルの現金、指値でロック中の買い付け資金、総資産（円換算）、評価額、評価損益、USD/JPY。`/api/mypage` と同じ計算で、スナップショットは書き込まない |
+| `get_holdings` | `portfolio:read` | 保有銘柄ごとの株数・売却可能株数・平均取得単価・現在値・評価額・評価損益。**先に指値の約定判定を行う**（`/api/portfolio` と同じ、4.4） |
+| `get_orders` | `portfolio:read` | 注文履歴。`status`（任意）・`limit`（既定30、最大100）。先に指値の約定判定を行う |
+| `get_trades` | `portfolio:read` | 取引履歴（保有中・売却済み）。`status`・`limit` |
+| `search_symbols` | `market:read` | 銘柄の検索（コード・名前・シンボル）。`unit_size`（売買単位）を含む。最大30件 |
+| `get_prices` | `market:read` | 表示用の現在値（4.14、最大30銘柄）。**約定には使わない** |
+| `place_market_order` | `trade:write` | 成行注文（4.2）。`market`・`code`・`side`・`quantity`・`settlement_currency`（米国株の買いのみ）・`idempotency_key`（任意。再送時は同じ値を渡す。省略時はサーバーが生成） |
+| `place_limit_order` | `trade:write` | 指値注文（4.3）。上に加え `order_type`・`target_price`・`expires_date`（取引所の現地日付、当日から14日先まで） |
+| `cancel_order` | `trade:write` | 未約定（PENDING）の注文の取消。ロックした資金・株数を返す |
+
+- **注文は既存のAPIと同一の処理**（`services/orderService.ts`）を呼ぶ。余力・売却可能株数の検証、資金ロック、全量約定または却下、冪等性キー（自分の注文の範囲）はそのまま。
+- ツールの失敗（残高不足・銘柄なし・市場データ取得不可など）は、JSON-RPCエラーではなく、`isError: true` のツール結果として返す（AIが直して再試行できるように）。未知のツール名・不正な引数の形は、プロトコルエラー（`-32602`）。
+- 注釈（`annotations`）: 閲覧系は `readOnlyHint: true`。注文系は `readOnlyHint: false`・`destructiveHint: true`、`cancel_order` は `idempotentHint: true`。
+
+**安全装置**
+
+- **呼び出しの頻度制限:** 1つの許可につき1分あたり60回（Workerインスタンス内のメモリで数える大まかな制限）。**注文の頻度制限:** 1ユーザーにつき、直近60秒の注文が10件に達していたら、`place_*_order` を拒否する（`orders` テーブルを数えるため厳密。AIの暴走・ループの防止）。既定値は変数 `MCP_ORDER_RATE_LIMIT_PER_MIN`。
+- 注文系の権限は、承認画面で明示的に選ばない限り付与されない。許可はいつでも設定画面から取り消せる。
+- ツールの入力は、型・範囲・長さをすべてサーバー側で検証する（銘柄コード20文字、数量は1以上の整数で上限10億、価格は有限の正数で上限10億 など）。
+- ツールの出力には、ユーザー名・メールアドレス・他人の情報を含めない。
+
+**変更しないもの:** 売買単位（`unit_size`）の強制は、従来どおりWeb画面側（ボタンの単位）だけで行い、サーバーAPIでは強制しない。`search_symbols` が `unit_size` を返すので、AIは単位を意識して数量を決められる。
+
 ## 5. API プロキシ・CORS 切り替え仕様
 
 Workers のリクエスト制限を回避するため、以下の 2 段階の切り替え構成を実装する。
@@ -545,6 +709,7 @@ Workers のリクエスト制限を回避するため、以下の 2 段階の切
   - **エラー応答（v2.7）:** 想定外の例外は `500 {error: 'internal server error'}` のみを返し、メッセージの詳細（SQL・ライブラリの内部情報）は返さずサーバーのログに残す。パスキーの検証失敗の理由（`detail`）は、設定ミスの切り分けのために残している。
   - **WebSocket（v2.7）:** `/api/live-prices` は、`Origin` が自サイトと異なる接続を拒否する（Cross-Site WebSocket Hijacking対策）。クライアントから上流へ中継するのは `subscribe` / `unsubscribe`（シンボルは英数字と `. - = ^` の20文字以内）だけで、1メッセージ50件・1接続150件・8KBまで。それ以外のフレームは捨てる（認証済みの利用者でも、上流へ任意のデータを送れないようにする）。
   - **権限・冪等性（v2.7）:** 注文の冪等性キーは自分の注文の範囲だけで照合する。CSRFトークンの比較は一定時間比較で行う。
+  - **OAuth・MCP（v2.9）:** 詳細は4.17・4.18。要点: ① 認可コードは120秒・1回限り・使用済みの再来で許可ごと失効、PKCEは`S256`のみ ② リフレッシュトークンは使用のたびに再発行し、使用済みの再来で許可ごと失効 ③ トークンはD1にハッシュのみ保存、トークンの宛先（`resource`）を検証し、他のリソース向けのトークンは受け付けない ④ 戻り先URIは完全一致（ループバックのみポート可変）で、不正な `client_id`・`redirect_uri` へはリダイレクトしない ⑤ 承認画面は毎回表示し、アプリ名は「自己申告・未検証」と明示、戻り先ホストを表示、権限は項目ごとに選べて注文権限は初期OFF ⑥ `/mcp` はベアラートークンのみ・`/api/*` はCookieのみで、相互に受け付けない（トークンがCSRFの対象にならず、Cookieが `/mcp` を呼べない） ⑦ DCRとCIMDの取得は、IP単位・全体の件数制限、サイズ・時間・リダイレクトの制限、IPアドレス・内部ホスト名の拒否で、濫用とSSRFを抑える ⑧ 承認画面のDOMは `escapeHtml` を通す（アプリ名は第三者が自由に付けられる）。承認後の戻り先への移動は `fetch` のJSON経由で、CSPの `form-action 'self'` を維持する ⑨ OAuth・MCPの公開エンドポイント（`/.well-known/*`・`/oauth/*`）だけは、ワイルドカードCORS（`Access-Control-Allow-Origin: *`）を返す（Cookieもクレデンシャルも使わず、ベアラートークン・PKCEで保護するため）。`/mcp` は許可したOriginにだけCORSを返す。`/api/*` は従来どおりCORSなし
   - **既知のリスクと未対応（v2.7時点）:**
     - パスワードのハッシュが、ソルト付きの単純なSHA-256（1回）で、総当たりに弱い。PBKDF2等への移行（ログイン成功時にハッシュを透過的に置き換える方式）を推奨するが、**WorkersはFreeプランでCPU時間の制限が厳しいため、移行は見送りと決定した（v2.8）。**ログインの試行回数制限（アカウントロック）とTurnstileは併用している。
     - 依存パッケージ `xlsx`（JPXの銘柄一覧の読み込みに使用）に、npmで公開されている版の既知の脆弱性（プロトタイプ汚染・ReDoS）がある。npmには修正版が無く（SheetJSは配布先を自社CDNに移した）、現状は信頼できる取得元（JPXの公開ファイル）のCron実行のみで使っているため影響は限定的。**対応しない（許容する）と決定した（v2.8）。**
