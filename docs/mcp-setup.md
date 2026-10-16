@@ -169,6 +169,7 @@ curl -s -X POST https://demo-trade-app.haru-tkh11.workers.dev/oauth/register \
 | 接続後に `401` | トークンのリソースが違う（「リソース」が `…/mcp` になっているか）、許可を取り消した、期限切れ（自動更新されないクライアントは再接続） |
 | 注文系のツールが見えない | 承認画面で `trade:write` をONにしたか。設定の「連携アプリ」で権限を確認し、足りなければ再接続 |
 | `403 Origin not allowed` | ブラウザから直接呼ぶ接続元のOriginが許可リストにない。Cloudflareの変数 `MCP_ALLOWED_ORIGINS` に追加する（既定は `https://claude.ai,https://claude.com`） |
+| 「PKCE（`code_challenge_methods_supported` に `S256`）が見つからない」 | 認可サーバーのメタデータは `S256` を返しています（`/.well-known/oauth-authorization-server`）。**この機能を含むバージョンが、デプロイ先にまだ反映されていない**ことがほとんどです。`curl -s $BASE/.well-known/oauth-authorization-server` で `code_challenge_methods_supported` が出るか確認してください。404ならPRのマージ・デプロイ前です |
 | 連携アプリが20件に達した | 設定の「連携アプリ」で使わないものを取り消す |
 | DCRで `429` | 登録が多すぎる（同じIPから1時間10件まで）。時間を置く |
 

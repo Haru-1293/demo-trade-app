@@ -89,6 +89,11 @@ function authorizationServerMetadata(issuer: string) {
 }
 app.get('/.well-known/oauth-authorization-server', (c) => c.json(authorizationServerMetadata(issuerOf(c.req.url))));
 app.get('/.well-known/openid-configuration', (c) => c.json(authorizationServerMetadata(issuerOf(c.req.url))));
+// クライアントによっては、リソースのパスを挿入した形（RFC 8414 3.1）や、OIDC風の別の置き場所を探しに来る。どれも同じ内容を返す
+app.get('/.well-known/oauth-authorization-server/*', (c) => c.json(authorizationServerMetadata(issuerOf(c.req.url))));
+app.get('/.well-known/openid-configuration/*', (c) => c.json(authorizationServerMetadata(issuerOf(c.req.url))));
+app.get('/mcp/.well-known/openid-configuration', (c) => c.json(authorizationServerMetadata(issuerOf(c.req.url))));
+app.get('/mcp/.well-known/oauth-authorization-server', (c) => c.json(authorizationServerMetadata(issuerOf(c.req.url))));
 
 // ---------- DCR (RFC 7591) ----------
 const DCR_PER_IP_PER_HOUR = 10;
