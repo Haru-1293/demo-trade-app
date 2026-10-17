@@ -1205,12 +1205,12 @@ async function renderHistory(main) {
   const list = document.getElementById('history-list');
   try {
     if (historyState.sub === 'orders') {
-      const { orders } = await api('/orders');
+      const [{ orders }] = await Promise.all([api('/orders'), ensureSymbolIndex()]);
       list.innerHTML = orders.length ? orders.map((o) => `
         <div class="list-row">
           <div>
-            <div class="name">${escapeHtml(o.symbol)} <span class="badge ${escapeHtml(o.status)}">${escapeHtml(o.status)}</span></div>
-            <div class="sub">${escapeHtml(o.order_type)} / ${escapeHtml(o.quantity)}株${o.target_price ? ` @ ${escapeHtml(o.target_price)}` : ''}</div>
+            <div class="name">${escapeHtml(symbolDisplayName(o.market, o.code, o.symbol))} <span class="badge ${escapeHtml(o.status)}">${escapeHtml(o.status)}</span></div>
+            <div class="sub">${escapeHtml(o.code)} ・ ${escapeHtml(o.order_type)} / ${escapeHtml(o.quantity)}株${o.target_price ? ` @ ${escapeHtml(o.target_price)}` : ''}</div>
           </div>
           ${o.status === 'PENDING' ? `<button class="btn-link" data-cancel="${escapeHtml(o.id)}">取消</button>` : ''}
         </div>
@@ -1218,12 +1218,12 @@ async function renderHistory(main) {
       list.querySelectorAll('[data-cancel]').forEach((b) =>
         b.addEventListener('click', () => cancelOrder(b.dataset.cancel)));
     } else if (historyState.sub === 'trades') {
-      const { trades } = await api('/trades');
+      const [{ trades }] = await Promise.all([api('/trades'), ensureSymbolIndex()]);
       list.innerHTML = trades.length ? trades.map((t) => `
         <div class="list-row">
           <div>
-            <div class="name">${escapeHtml(t.name)} <span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></div>
-            <div class="sub">${escapeHtml(t.quantity)}株 買 ${escapeHtml(t.buy_price)}(${escapeHtml(t.buy_date)})${t.sell_price ? ` → 売 ${escapeHtml(t.sell_price)}(${escapeHtml(t.sell_date)})` : ''}</div>
+            <div class="name">${escapeHtml(symbolDisplayName(t.market, t.code, t.name))} <span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></div>
+            <div class="sub">${escapeHtml(t.code)} ・ ${escapeHtml(t.quantity)}株 買 ${escapeHtml(t.buy_price)}(${escapeHtml(t.buy_date)})${t.sell_price ? ` → 売 ${escapeHtml(t.sell_price)}(${escapeHtml(t.sell_date)})` : ''}</div>
           </div>
           ${t.profit_jpy_c != null ? `<div class="value ${t.profit_jpy_c >= 0 ? 'up' : 'down'}">${yen(t.profit_jpy_c)}</div>` : ''}
         </div>
@@ -1255,6 +1255,16 @@ async function renderHistory(main) {
   } catch (e) {
     list.innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+// 履歴の銘柄名: 銘柄インデックス（クライアントのIndexedDB）の企業名を優先し、無ければ保存済みの名前・シンボルを出す
+function symbolDisplayName(market, code, fallback) {
+  const sym = SymbolIndex.get(market, code);
+  return sym ? sym.name : (fallback || code);
+}
+// 履歴の描画前に、銘柄インデックスの読み込みを待つ（取得に失敗しても履歴は出す）
+function ensureSymbolIndex() {
+  return SymbolIndex.init(() => api('/symbols')).catch(() => {});
 }
 
 async function cancelOrder(id) {
