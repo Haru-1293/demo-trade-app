@@ -621,6 +621,7 @@ async function renderHome(main) {
         <span class="search-icon">🔍</span><span>銘柄を検索（名前・ティッカー・証券コード）</span>
       </button>
       <div class="section-title">保有銘柄</div>
+      <div id="home-pnl-summary" class="pnl-summary" hidden></div>
       <div id="home-rows" aria-busy="true">${skeletonRows(3)}</div>
     </div>
   `;
@@ -640,21 +641,36 @@ async function renderHome(main) {
 
   const rows = state.portfolio.length
     ? state.portfolio.map((t) => `
-      <div class="list-row" data-symbol-row="${escapeHtml(t.symbol)}">
-        <div>
-          <div class="name">${escapeHtml(t.name)} <span class="sub">${escapeHtml(t.code)}</span></div>
-          <div class="sub">
-            ${escapeHtml(t.quantity)}株 @ ${escapeHtml(t.buy_price)} (${escapeHtml(t.buy_date)})
-            ・現在値 <span data-live-symbol="${escapeHtml(t.symbol)}" data-buy-price="${escapeHtml(t.buy_price)}">${t.market === 'JP' ? '¥' : '$'}${escapeHtml(t.buy_price)}</span><span class="asof" data-asof="${escapeHtml(t.symbol)}"></span>
+      <div class="list-row holding-row" data-symbol-row="${escapeHtml(t.symbol)}">
+        <div class="holding-main">
+          <div class="name">${escapeHtml(t.name)} <span class="sub">${escapeHtml(t.code)}</span>
             <span class="live-dot" data-live-dot="${escapeHtml(t.symbol)}" title="ライブ未接続">●</span>
+          </div>
+          <div class="sub">${escapeHtml(t.quantity)}株 ・ ${escapeHtml(t.buy_date)}に購入</div>
+          <div class="price-pair">
+            <div class="price-cell">
+              <span class="price-label">購入価格</span>
+              <span class="price-val">${fmtUnitPrice(t.market, t.buy_price)}</span>
+            </div>
+            <div class="price-cell">
+              <span class="price-label">現在値</span>
+              <span class="price-val"><span data-live-symbol="${escapeHtml(t.symbol)}" data-buy-price="${escapeHtml(t.buy_price)}">${fmtUnitPrice(t.market, t.buy_price)}</span></span>
+              <span class="asof" data-asof="${escapeHtml(t.symbol)}"></span>
+            </div>
           </div>
           <div class="row-actions">
             <button type="button" class="row-action-btn buy" data-holding-action="BUY" data-market="${escapeHtml(t.market)}" data-code="${escapeHtml(t.code)}" data-qty="${escapeHtml(t.quantity)}">追加購入</button>
             <button type="button" class="row-action-btn sell" data-holding-action="SELL" data-market="${escapeHtml(t.market)}" data-code="${escapeHtml(t.code)}" data-qty="${escapeHtml(t.quantity)}">売却</button>
           </div>
         </div>
-        <div class="value" data-live-value="${escapeHtml(t.symbol)}" data-market="${escapeHtml(t.market)}" data-quantity="${escapeHtml(t.quantity)}">
-          ${t.market === 'JP' ? yenFromPrice(t.buy_price, t.quantity) : usdFromPrice(t.buy_price, t.quantity)}
+        <div class="holding-side">
+          <div class="side-label">評価損益</div>
+          <div class="pnl-main flat" data-live-pnl="${escapeHtml(t.symbol)}" data-market="${escapeHtml(t.market)}" data-quantity="${escapeHtml(t.quantity)}" data-buy-price="${escapeHtml(t.buy_price)}">―</div>
+          <div class="pnl-rate flat" data-live-pnl-rate="${escapeHtml(t.symbol)}"></div>
+          <div class="side-label mt-6">評価額</div>
+          <div class="value" data-live-value="${escapeHtml(t.symbol)}" data-market="${escapeHtml(t.market)}" data-quantity="${escapeHtml(t.quantity)}">
+            ${t.market === 'JP' ? yenFromPrice(t.buy_price, t.quantity) : usdFromPrice(t.buy_price, t.quantity)}
+          </div>
         </div>
       </div>
     `).join('')
@@ -694,6 +710,61 @@ function startOrderFromHolding(market, code, side, heldQty) {
   orderState.quantity = side === 'SELL' && heldQty > 0 ? Math.min(unit, heldQty) : unit;
   state.tab = 'order';
   render();
+}
+// 1株あたりの価格表示（円は整数、ドルは小数2桁まで）
+function fmtUnitPrice(market, price) {
+  const n = Number(price);
+  return (market === 'US' ? '$' : '¥') + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+// 評価損益の1行分を、現在値から計算して表示する。損益は「(現在値 − 購入価格) × 株数」
+function updatePnlForSymbol(symbol, price) {
+  document.querySelectorAll(`[data-live-pnl="${cssEscape(symbol)}"]`).forEach((el) => {
+    const qty = Number(el.dataset.quantity || '0');
+    const buy = Number(el.dataset.buyPrice || '0');
+    const market = el.dataset.market;
+    const diff = (price - buy) * qty;
+    const rate = buy > 0 ? ((price - buy) / buy) * 100 : 0;
+    const dir = Math.abs(diff) < (market === 'US' ? 0.005 : 0.5) ? 'flat' : (diff > 0 ? 'up' : 'down');
+    const sign = dir === 'up' ? '+' : dir === 'down' ? '−' : '';
+    const abs = Math.abs(diff);
+    const money = market === 'US' ? '$' + abs.toFixed(2) : '¥' + Math.round(abs).toLocaleString();
+    el.textContent = sign + money;
+    el.dataset.pnl = String(diff);
+    el.classList.remove('up', 'down', 'flat');
+    el.classList.add(dir);
+    const rateEl = el.parentElement.querySelector('[data-live-pnl-rate]');
+    if (rateEl) {
+      rateEl.textContent = `${dir === 'up' ? '+' : dir === 'down' ? '−' : ''}${Math.abs(rate).toFixed(2)}%`;
+      rateEl.classList.remove('up', 'down', 'flat');
+      rateEl.classList.add(dir);
+    }
+  });
+  updateHomePnlSummary();
+}
+// 保有銘柄の損益合計（通貨が違うので、円・ドルを別々に足す）
+function updateHomePnlSummary() {
+  const box = document.getElementById('home-pnl-summary');
+  if (!box) return;
+  const sum = { JP: 0, US: 0 };
+  const cnt = { JP: 0, US: 0 };
+  document.querySelectorAll('[data-live-pnl]').forEach((el) => {
+    if (el.dataset.pnl === undefined) return;
+    sum[el.dataset.market] += Number(el.dataset.pnl);
+    cnt[el.dataset.market] += 1;
+  });
+  const parts = [];
+  const part = (market, label) => {
+    if (!cnt[market]) return;
+    const v = sum[market];
+    const flat = Math.abs(v) < (market === 'US' ? 0.005 : 0.5);
+    const dir = flat ? 'flat' : v > 0 ? 'up' : 'down';
+    const money = market === 'US' ? '$' + Math.abs(v).toFixed(2) : '¥' + Math.round(Math.abs(v)).toLocaleString();
+    parts.push(`<span>${label}</span> <strong class="${dir}">${dir === 'up' ? '+' : dir === 'down' ? '−' : ''}${money}</strong>`);
+  };
+  part('JP', '日本株');
+  part('US', '米国株');
+  box.hidden = parts.length === 0;
+  box.innerHTML = parts.length ? `<span class="pnl-summary-title">評価損益の合計</span>${parts.join('')}` : '';
 }
 function yenFromPrice(price, qty) { return '¥' + Math.round(price * qty).toLocaleString(); }
 function usdFromPrice(price, qty) { return '$' + (price * qty).toFixed(2); }
@@ -1207,8 +1278,18 @@ function renderFx(main) {
 
 // ---------- 設定 ----------
 function renderSettings(main) {
+  const themeNow = getThemeSetting();
   main.innerHTML = `
     <div class="section">
+      <div class="section-title">表示</div>
+      <div class="card">
+        <label>テーマ</label>
+        <div class="segmented" id="theme-seg">
+          ${THEME_OPTIONS.map(([v, label]) => `<button type="button" data-v="${v}" class="${v === themeNow ? 'active' : ''}">${label}</button>`).join('')}
+        </div>
+        <p class="muted-text mt-10">「端末の設定」は、スマートフォンやPCのダーク／ライトの設定に合わせます。この設定は、いま使っているブラウザだけに保存されます。</p>
+      </div>
+
       <div class="section-title">パスワード変更</div>
       <div class="card">
         <div class="form-group">
@@ -1249,6 +1330,10 @@ function renderSettings(main) {
     </div>
   `;
   document.getElementById('delete-account-btn').addEventListener('click', openDeleteAccountDialog);
+  document.querySelectorAll('#theme-seg button').forEach((b) => b.addEventListener('click', () => {
+    applyThemeSetting(b.dataset.v);
+    document.querySelectorAll('#theme-seg button').forEach((x) => x.classList.toggle('active', x === b));
+  }));
   const addBtn = document.getElementById('passkey-add-btn');
   if (addBtn) addBtn.addEventListener('click', registerPasskey);
   loadPasskeyList();
@@ -1438,7 +1523,7 @@ async function loadGrantList() {
           <div class="sub">${g.host ? escapeHtml(g.host) + ' ・ ' : ''}${g.scopes.map((s) => escapeHtml(SCOPE_LABELS[s] || s)).join('、')}</div>
           <div class="sub">接続 ${formatUnixDateTime(g.connected_at)} ・ 最終利用 ${g.last_used_at ? formatUnixDateTime(g.last_used_at) : 'なし'}</div>
         </div>
-        <button type="button" class="link-btn danger" data-grant-revoke="${escapeHtml(g.id)}">取り消す</button>
+        <button type="button" class="btn btn-danger-outline btn-sm" data-grant-revoke="${escapeHtml(g.id)}">連携を解除</button>
       </div>`).join('') : '<div class="empty-hint">連携中のアプリはありません</div>';
     box.querySelectorAll('[data-grant-revoke]').forEach((b) => b.addEventListener('click', () => revokeGrantUi(b.dataset.grantRevoke)));
   } catch (e) {
@@ -1448,14 +1533,55 @@ async function loadGrantList() {
 }
 
 async function revokeGrantUi(id) {
-  if (!confirm('このアプリの接続を取り消しますか？（アプリはすぐにアクセスできなくなります）')) return;
+  const name = (document.querySelector(`[data-grant-revoke="${cssEscape(id)}"]`)?.closest('.list-row')?.querySelector('.name')?.textContent || 'このアプリ').replace(/^🤖\s*/, '');
+  const ok = await confirmDialog({
+    title: '連携を解除しますか？',
+    text: `「${name}」はすぐにあなたのデモ口座へアクセスできなくなります。再び使うには、もう一度接続して許可する必要があります。`,
+    okLabel: '連携を解除する',
+  });
+  if (!ok) return;
   try {
     await api(`/oauth/grants/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    toast('取り消しました');
+    toast('連携を解除しました');
   } catch (e) {
-    toast(`取り消せませんでした: ${e.message}`);
+    toast(`解除できませんでした: ${e.message}`);
   }
   loadGrantList();
+}
+
+// 確認ダイアログ（ブラウザのconfirm()は埋め込み環境で出ないことがあるため、アプリ内のモーダルを使う）
+function confirmDialog({ title, text, okLabel = 'OK', danger = true }) {
+  return new Promise((resolve) => {
+    if (document.getElementById('confirm-overlay')) { resolve(false); return; }
+    const overlay = document.createElement('div');
+    overlay.id = 'confirm-overlay';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title">${escapeHtml(title)}</div>
+        <p class="modal-text">${escapeHtml(text)}</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" id="confirm-cancel">キャンセル</button>
+          <button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" id="confirm-ok">${escapeHtml(okLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = (v) => { overlay.remove(); resolve(v); };
+    document.getElementById('confirm-cancel').addEventListener('click', () => done(false));
+    document.getElementById('confirm-ok').addEventListener('click', () => done(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
+  });
+}
+
+// ---------- 表示テーマ（既定は端末の設定。選んだ値はこの端末のブラウザに保存） ----------
+const THEME_OPTIONS = [['system', '端末の設定'], ['light', 'ライト'], ['dark', 'ダーク']];
+function getThemeSetting() {
+  try { const t = localStorage.getItem('theme'); return t === 'light' || t === 'dark' ? t : 'system'; } catch { return 'system'; }
+}
+function applyThemeSetting(mode) {
+  try { if (mode === 'system') localStorage.removeItem('theme'); else localStorage.setItem('theme', mode); } catch { /* 保存できなくても、このセッション中は反映する */ }
+  if (mode === 'light' || mode === 'dark') document.documentElement.setAttribute('data-theme', mode);
+  else document.documentElement.removeAttribute('data-theme');
 }
 
 // ---------- アカウント削除 ----------
@@ -1752,6 +1878,9 @@ function applyLivePriceToDom(symbol, prevPrice) {
     const market = valueEl.dataset.market;
     valueEl.textContent = market === 'US' ? usdFromPrice(price, qty) : yenFromPrice(price, qty);
   });
+
+  // ホームの保有銘柄: 評価損益を現在値から再計算する（ライブ価格・暫定価格のどちらでも）
+  updatePnlForSymbol(symbol, price);
 
   // マイページはWSSの受信分を評価額へ反映する
   if (isLive && state.tab === 'mypage') scheduleMypageRecalc();

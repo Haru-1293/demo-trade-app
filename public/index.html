@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0f0f10" media="(prefers-color-scheme: dark)" />
+  <!-- 保存済みのテーマ指定を、描画前に反映する（白い画面が一瞬出るのを防ぐ） -->
+  <script src="/theme.js"></script>
   <title>デモトレード</title>
   <!-- ライブ株価表示(WSS)はWorker(/api/live-prices)がYahoo Financeへパススルー中継するため、
        クライアントは自ドメインへの接続のみで済む(仕様書4.8) -->

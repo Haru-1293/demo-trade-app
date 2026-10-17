@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --primary: #06c755;
   --primary-dark: #05a648;
   --danger: #ff3040;
@@ -9,6 +10,68 @@
   --text-sub: #8e8e8e;
   --radius: 14px;
   --tab-height: 58px;
+  /* 面・入力・状態色（ダークモードで差し替える） */
+  --surface-2: #fafafa;
+  --input-bg: #ffffff;
+  --fill: #efefef;
+  --hover: #f3f3f3;
+  --primary-soft: #e9f9ef;
+  --link: #05a648;
+  --ok-bg: #e6f9ee; --ok-fg: #05a648;
+  --warn-bg: #fff4d6; --warn-fg: #a67c00;
+  --neutral-bg: #f1f1f1;
+  --notice-bg: #fff3cd; --notice-fg: #7a5b00;
+  --err-bg: #ffe5e8; --err-fg: #a3000f;
+  --toast-bg: rgba(26,26,26,0.92);
+  --disabled: #c9c9c9;
+  --skel-a: #ececec; --skel-b: #f6f6f6;
+}
+/* ダークモード: 既定は端末の設定に従い、設定画面で「ライト」「ダーク」を選んだときは data-theme で固定する */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f0f10;
+  --card-bg: #1b1b1d;
+  --border: #2d2d30;
+  --text: #f2f2f3;
+  --text-sub: #9b9ba1;
+  --surface-2: #19191b;
+  --input-bg: #242427;
+  --fill: #2a2a2d;
+  --hover: #262629;
+  --primary-soft: #12301f;
+  --link: #3ddc84;
+  --ok-bg: #12301f; --ok-fg: #3ddc84;
+  --warn-bg: #3a3012; --warn-fg: #f0c24b;
+  --neutral-bg: #2a2a2d;
+  --notice-bg: #3a3012; --notice-fg: #f0c24b;
+  --err-bg: #3d1218; --err-fg: #ff8a96;
+  --toast-bg: rgba(70,70,76,0.96);
+  --disabled: #55555a;
+  --skel-a: #232326; --skel-b: #2e2e32;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0f0f10;
+    --card-bg: #1b1b1d;
+    --border: #2d2d30;
+    --text: #f2f2f3;
+    --text-sub: #9b9ba1;
+    --surface-2: #19191b;
+    --input-bg: #242427;
+    --fill: #2a2a2d;
+    --hover: #262629;
+    --primary-soft: #12301f;
+    --link: #3ddc84;
+    --ok-bg: #12301f; --ok-fg: #3ddc84;
+    --warn-bg: #3a3012; --warn-fg: #f0c24b;
+    --neutral-bg: #2a2a2d;
+    --notice-bg: #3a3012; --notice-fg: #f0c24b;
+    --err-bg: #3d1218; --err-fg: #ff8a96;
+    --toast-bg: rgba(70,70,76,0.96);
+    --disabled: #55555a;
+    --skel-a: #232326; --skel-b: #2e2e32;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -62,7 +125,7 @@ html, body {
   z-index: 9;
   display: flex;
   gap: 0;
-  background: #fbfbfb;
+  background: var(--surface-2);
   border-bottom: 1px solid var(--border);
   padding: 8px 4px;
 }
@@ -170,11 +233,11 @@ input[type="text"], input[type="password"], input[type="number"], input[type="da
   padding: 12px 14px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: #fafafa;
+  background: var(--surface-2);
   font-size: 15px;
   color: var(--text);
 }
-input:focus, select:focus { outline: none; border-color: var(--primary); background: white; }
+input:focus, select:focus { outline: none; border-color: var(--primary); background: var(--input-bg); }
 
 .btn {
   width: 100%;
@@ -188,13 +251,13 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .btn-primary { background: var(--primary); color: white; }
 .btn-primary:active { background: var(--primary-dark); }
 .btn-danger { background: var(--danger); color: white; }
-.btn-outline { background: white; color: var(--text); border: 1px solid var(--border); }
+.btn-outline { background: var(--input-bg); color: var(--text); border: 1px solid var(--border); }
 .btn-link { background: none; border: none; color: var(--primary); font-size: 13px; font-weight: 700; cursor: pointer; padding: 8px; }
 
 /* ---------- Segmented control ---------- */
 .segmented {
   display: flex;
-  background: #efefef;
+  background: var(--fill);
   border-radius: 10px;
   padding: 3px;
   margin-bottom: 14px;
@@ -210,7 +273,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
   color: var(--text-sub);
   cursor: pointer;
 }
-.segmented button.active { background: white; color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+.segmented button.active { background: var(--input-bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
 .segmented.buy-sell button.active.buy { color: var(--primary); }
 .segmented.buy-sell button.active.sell { color: var(--danger); }
 
@@ -225,7 +288,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
   height: 44px;
   border-radius: 50%;
   border: 1px solid var(--border);
-  background: white;
+  background: var(--input-bg);
   font-size: 20px;
   font-weight: 700;
   color: var(--text);
@@ -245,13 +308,13 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
   padding: 8px 14px;
   border-radius: 20px;
   border: 1px solid var(--border);
-  background: white;
+  background: var(--input-bg);
   font-size: 12px;
   font-weight: 700;
   color: var(--text-sub);
   cursor: pointer;
 }
-.subtabs button.active { background: var(--text); color: white; border-color: var(--text); }
+.subtabs button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
 
 .badge {
   display: inline-block;
@@ -260,16 +323,16 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
   padding: 2px 8px;
   border-radius: 20px;
 }
-.badge.HOLD, .badge.PENDING { background: #fff4d6; color: #a67c00; }
-.badge.SOLD, .badge.EXECUTED { background: #e6f9ee; color: var(--primary-dark); }
-.badge.EXPIRED, .badge.CANCELLED, .badge.REJECTED, .badge.DATA_UNAVAILABLE { background: #f1f1f1; color: var(--text-sub); }
+.badge.HOLD, .badge.PENDING { background: var(--warn-bg); color: var(--warn-fg); }
+.badge.SOLD, .badge.EXECUTED { background: var(--ok-bg); color: var(--ok-fg); }
+.badge.EXPIRED, .badge.CANCELLED, .badge.REJECTED, .badge.DATA_UNAVAILABLE { background: var(--neutral-bg); color: var(--text-sub); }
 
 .toast {
   position: fixed;
   bottom: calc(var(--tab-height) + 16px);
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(26,26,26,0.92);
+  background: var(--toast-bg);
   color: white;
   padding: 10px 18px;
   border-radius: 30px;
@@ -375,8 +438,8 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
     border-radius: 12px;
     font-size: 14px;
   }
-  body.logged-in .tab-item:hover { background: #f3f3f3; }
-  body.logged-in .tab-item.active { background: #e9f9ef; }
+  body.logged-in .tab-item:hover { background: var(--hover); }
+  body.logged-in .tab-item.active { background: var(--primary-soft); }
   body.logged-in .tab-item .icon { font-size: 20px; }
   body.logged-in .toast { bottom: 24px; }
   /* 保有銘柄などの行は少し余白を持たせる */
@@ -430,17 +493,17 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .chart-area { fill: rgba(6, 199, 85, 0.12); }
 .chart-dot { fill: var(--primary); }
 .chart-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-sub); margin-top: 6px; }
-.badge.APPROVED { background: #e6f9ee; color: var(--primary-dark); }
+.badge.APPROVED { background: var(--ok-bg); color: var(--ok-fg); }
 
 /* ---------- フォーム部品（select/textarea/日付選択） ---------- */
 .form-group select, .form-group textarea {
   width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
-  font-size: 15px; background: #fff; font-family: inherit;
+  font-size: 15px; background: var(--input-bg); font-family: inherit;
 }
 .date-field {
   width: 100%; display: flex; justify-content: space-between; align-items: center;
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
-  background: #fff; font-size: 15px; cursor: pointer; text-align: left;
+  background: var(--input-bg); font-size: 15px; cursor: pointer; text-align: left;
 }
 
 /* ---------- 指値有効期限カレンダー ---------- */
@@ -450,14 +513,14 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 }
 .cal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .cal-title { font-weight: 700; font-size: 14px; }
-.cal-nav { width: 32px; height: 32px; border: 1px solid var(--border); background: #fff; border-radius: 50%; font-size: 18px; cursor: pointer; }
+.cal-nav { width: 32px; height: 32px; border: 1px solid var(--border); background: var(--input-bg); border-radius: 50%; font-size: 18px; cursor: pointer; }
 .cal-nav:disabled { opacity: 0.3; cursor: default; }
 .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
 .cal-dow span { text-align: center; font-size: 11px; color: var(--text-sub); padding: 2px 0; }
 .cal-cell { height: 36px; border: none; border-radius: 50%; background: transparent; font-size: 14px; color: var(--text); }
 .cal-cell.ok { cursor: pointer; font-weight: 700; }
-.cal-cell.ok:active { background: #e9f9ef; }
-.cal-cell.disabled { color: #c9c9c9; cursor: default; }
+.cal-cell.ok:active { background: var(--primary-soft); }
+.cal-cell.disabled { color: var(--disabled); cursor: default; }
 .cal-cell.today { box-shadow: inset 0 0 0 1px var(--primary); }
 .cal-cell.selected { background: var(--primary); color: #fff; }
 .cal-foot { margin-top: 8px; font-size: 11px; color: var(--text-sub); text-align: center; }
@@ -468,7 +531,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .search-pill {
   width: 100%; display: flex; align-items: center; gap: 8px;
   padding: 11px 14px; margin-bottom: 14px;
-  background: #efefef; border: none; border-radius: 22px;
+  background: var(--fill); border: none; border-radius: 22px;
   color: var(--text-sub); font-size: 14px; cursor: pointer; text-align: left;
 }
 .search-icon { font-size: 14px; opacity: 0.7; }
@@ -479,7 +542,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 }
 .search-input-wrap {
   flex: 1; display: flex; align-items: center; gap: 8px;
-  background: #efefef; border-radius: 22px; padding: 0 12px;
+  background: var(--fill); border-radius: 22px; padding: 0 12px;
 }
 .search-input-wrap input {
   flex: 1; border: none; background: transparent; outline: none;
@@ -492,7 +555,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 }
 .chips { display: flex; gap: 8px; margin-bottom: 10px; }
 .chip {
-  border: 1px solid var(--border); background: #fff; color: var(--text);
+  border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
   padding: 6px 14px; border-radius: 16px; font-size: 13px; cursor: pointer;
 }
 .chip.active { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 700; }
@@ -500,7 +563,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .search-row .name { word-break: break-word; }
 .search-row .value { white-space: nowrap; padding-left: 10px; }
 .search-foot { text-align: center; font-size: 12px; color: var(--text-sub); padding: 12px 0 4px; }
-.link-btn { border: none; background: none; color: var(--primary-dark); font-size: 12px; font-weight: 700; cursor: pointer; padding: 0 4px; }
+.link-btn { border: none; background: none; color: var(--link); font-size: 12px; font-weight: 700; cursor: pointer; padding: 0 4px; }
 .link-btn:disabled { opacity: 0.5; }
 
 .symbol-field { position: relative; }
@@ -515,7 +578,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
   background: transparent; text-align: left; cursor: pointer;
 }
 .suggest-item:last-of-type { border-bottom: none; }
-.suggest-item:active, .suggest-item:hover { background: #f3faf6; }
+.suggest-item:active, .suggest-item:hover { background: var(--primary-soft); }
 .suggest-name { font-size: 14px; font-weight: 700; color: var(--text); }
 .suggest-sub { font-size: 11px; color: var(--text-sub); }
 .suggest-empty, .suggest-more { padding: 12px 14px; font-size: 12px; color: var(--text-sub); }
@@ -527,7 +590,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 
 /* ---------- スケルトン（読み込み中の枠） ---------- */
 .skeleton {
-  background: linear-gradient(90deg, #ececec 25%, #f6f6f6 37%, #ececec 63%);
+  background: linear-gradient(90deg, var(--skel-a) 25%, var(--skel-b) 37%, var(--skel-a) 63%);
   background-size: 400% 100%;
   animation: skeleton-shimmer 1.4s ease infinite;
   border-radius: 8px;
@@ -564,11 +627,11 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .consent-screen h2 { font-size: 18px; margin: 0 0 4px; text-align: center; }
 .consent-lead { text-align: center; font-size: 13px; color: var(--text-sub); margin: 0 0 16px; line-height: 1.6; }
 .consent-app { font-size: 17px; font-weight: 700; text-align: center; word-break: break-word; margin: 6px 0 2px; }
-.consent-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #fff3cd; color: #7a5b00; margin: 0 auto 10px; }
+.consent-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--notice-bg); color: var(--notice-fg); margin: 0 auto 10px; }
 .consent-center { text-align: center; }
 .consent-meta { font-size: 12px; color: var(--text-sub); line-height: 1.7; margin: 0 0 10px; word-break: break-all; }
-.consent-warn { font-size: 12px; line-height: 1.6; background: #fff3cd; color: #7a5b00; border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; }
-.consent-error { font-size: 13px; line-height: 1.6; background: #ffe5e8; color: #a3000f; border-radius: 10px; padding: 12px; margin: 0 0 12px; word-break: break-word; }
+.consent-warn { font-size: 12px; line-height: 1.6; background: var(--notice-bg); color: var(--notice-fg); border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; }
+.consent-error { font-size: 13px; line-height: 1.6; background: var(--err-bg); color: var(--err-fg); border-radius: 10px; padding: 12px; margin: 0 0 12px; word-break: break-word; }
 .consent-user { font-size: 12px; color: var(--text-sub); text-align: center; margin: 14px 0 0; }
 .consent-perm { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
 .consent-perm:last-child { border-bottom: none; }
@@ -579,5 +642,28 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .consent-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .consent-done { text-align: center; font-size: 14px; line-height: 1.8; padding: 24px 0; }
 .copy-box { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
-.copy-box input { flex: 1; min-width: 0; font-size: 12px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fafafa; color: var(--text); }
+.copy-box input { flex: 1; min-width: 0; font-size: 12px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); }
 .copy-box .btn { width: auto; padding: 9px 14px; font-size: 13px; }
+
+/* ---------- 保有銘柄（購入価格・現在値・評価損益） ---------- */
+.holding-row { align-items: flex-start; gap: 12px; }
+.holding-main { min-width: 0; flex: 1; }
+.holding-side { text-align: right; flex: none; min-width: 112px; }
+.holding-side .side-label { font-size: 10px; color: var(--text-sub); }
+.holding-side .mt-6 { margin-top: 6px; }
+.holding-side .value { font-size: 14px; }
+.pnl-main { font-size: 18px; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.pnl-rate { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pnl-main.up, .pnl-rate.up, .pnl-summary strong.up { color: var(--primary); }
+.pnl-main.down, .pnl-rate.down, .pnl-summary strong.down { color: var(--danger); }
+.pnl-main.flat, .pnl-rate.flat, .pnl-summary strong.flat { color: var(--text-sub); }
+.price-pair { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0 2px; }
+.price-cell { display: flex; flex-direction: column; min-width: 0; }
+.price-label { font-size: 10px; color: var(--text-sub); }
+.price-val { font-size: 16px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.price-cell .asof { font-size: 10px; color: var(--text-sub); }
+.pnl-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 8px; font-size: 13px; }
+.pnl-summary[hidden] { display: none; }
+.pnl-summary-title { font-size: 11px; color: var(--text-sub); width: 100%; }
+.pnl-summary strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.btn-sm { width: auto; padding: 8px 12px; font-size: 12px; flex: none; }
