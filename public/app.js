@@ -700,6 +700,7 @@ function startOrderFromHolding(market, code, side, heldQty) {
   const unit = sym && sym.unit_size ? sym.unit_size : (market === 'JP' ? 100 : 1);
   orderState.market = market;
   orderState.code = code;
+  orderState.query = '';
   orderState.side = side;
   orderState.orderType = 'MARKET';
   orderState.targetPrice = '';
@@ -848,7 +849,8 @@ const orderState = {
   market: 'JP',
   side: 'BUY',
   orderType: 'MARKET', // 'MARKET' | 'LIMIT'
-  code: '',
+  code: '', // 選択中（または入力から特定できた）銘柄のコード。注文APIにはこれを送る
+  query: '', // 銘柄欄に入力中の文字（銘柄が特定できていない間だけ、そのまま表示する）
   quantity: 1,
   unitSize: 1,
   targetPrice: '',
@@ -871,7 +873,7 @@ async function renderOrder(main) {
 
       <div class="form-group symbol-field">
         <label>銘柄（名前・ティッカー・コードで検索）</label>
-        <input type="text" id="order-code" autocomplete="off" placeholder="例: トヨタ / 7203 / MSFT" value="${escapeHtml(orderState.code)}">
+        <input type="text" id="order-code" autocomplete="off" placeholder="例: トヨタ / 7203 / MSFT" value="${escapeHtml(orderSymbolInputText())}">
         <div class="suggest" id="symbol-suggest" hidden></div>
       </div>
 
@@ -934,7 +936,7 @@ async function renderOrder(main) {
 
   main.querySelectorAll('#market-seg button').forEach((b) =>
     b.addEventListener('click', () => {
-      orderState.market = b.dataset.v; orderState.code = ''; orderState.settlementCurrency = 'NATIVE';
+      orderState.market = b.dataset.v; orderState.code = ''; orderState.query = ''; orderState.settlementCurrency = 'NATIVE';
       renderOrder(main);
     }));
   main.querySelectorAll('#side-seg button').forEach((b) =>
@@ -957,14 +959,22 @@ async function renderOrder(main) {
 
   const codeEl = document.getElementById('order-code');
   codeEl.addEventListener('input', (e) => {
-    orderState.code = e.target.value.trim().toUpperCase();
+    // 入力中の文字は、そのまま欄に残す。コードがちょうど一致する銘柄があれば、それを選択中として扱う
+    const text = e.target.value.trim();
+    orderState.query = e.target.value;
+    const upper = text.toUpperCase();
+    // 銘柄データの読み込み前は、従来どおり入力をコードとして保持する
+    orderState.code = SymbolIndex.get(orderState.market, upper) || SymbolIndex.getStatus().state !== 'ready' ? upper : '';
     updateQtyHint();
     clearTimeout(suggestTimer);
     suggestTimer = setTimeout(() => showSymbolSuggest(e.target.value), 80);
   });
   codeEl.addEventListener('focus', (e) => {
-    if (e.target.value.trim() && !findSymbol()) showSymbolSuggest(e.target.value);
+    if (findSymbol()) e.target.select(); // 企業名が出ているときは、そのまま打ち直せるように全選択
+    else if (e.target.value.trim()) showSymbolSuggest(e.target.value);
   });
+  // 入力を終えたとき、銘柄が特定できていれば、コードではなく企業名を表示する
+  codeEl.addEventListener('blur', () => syncOrderSymbolInput());
   // 候補リストの外をタップしたら閉じる（再描画のたびに付け替える）
   if (suggestOutsideHandler) document.removeEventListener('click', suggestOutsideHandler);
   suggestOutsideHandler = (e) => {
@@ -989,7 +999,7 @@ async function renderOrder(main) {
     document.getElementById('order-qty').value = orderState.quantity;
   });
   // 銘柄データの読み込みが後から終わった場合も、単元・銘柄名の表示を更新する
-  SymbolIndex.init(() => api('/symbols')).then(() => updateQtyHint()).catch(() => updateQtyHint());
+  SymbolIndex.init(() => api('/symbols')).then(() => { syncOrderSymbolInput(); updateQtyHint(); }).catch(() => updateQtyHint());
 
   const targetPriceEl = document.getElementById('order-target-price');
   if (targetPriceEl) targetPriceEl.addEventListener('input', (e) => { orderState.targetPrice = e.target.value; });
@@ -1015,6 +1025,20 @@ async function renderOrder(main) {
 
 function findSymbol() {
   return SymbolIndex.get(orderState.market, orderState.code);
+}
+
+// 銘柄欄に出す文字: 銘柄が特定できていれば企業名（銘柄インデックスから取得）、そうでなければ入力中の文字
+function orderSymbolInputText() {
+  const sym = findSymbol();
+  if (sym) return sym.name;
+  return orderState.query || orderState.code;
+}
+// 入力中でないときに、銘柄欄を企業名の表示へ揃える
+function syncOrderSymbolInput() {
+  const el = document.getElementById('order-code');
+  if (!el || document.activeElement === el) return;
+  const text = orderSymbolInputText();
+  if (el.value !== text) el.value = text;
 }
 
 // 1回の注文単位。銘柄が見つからない間も、日本株は既定100株で動かす（米国株は1株）。
@@ -1064,6 +1088,7 @@ function selectSymbolForOrder(sym) {
   const marketChanged = orderState.market !== sym.market;
   orderState.market = sym.market;
   orderState.code = sym.code;
+  orderState.query = sym.name;
   const box = document.getElementById('symbol-suggest');
   if (box) box.hidden = true;
   if (marketChanged) {
@@ -1071,7 +1096,7 @@ function selectSymbolForOrder(sym) {
     orderState.settlementCurrency = 'NATIVE';
     renderOrder(document.getElementById('main'));
   } else {
-    document.getElementById('order-code').value = sym.code;
+    document.getElementById('order-code').value = sym.name;
     updateQtyHint();
   }
 }
@@ -1082,8 +1107,8 @@ function updateQtyHint() {
   const sym = findSymbol();
   const st = SymbolIndex.getStatus();
   hint.textContent = sym
-    ? `${sym.name}（${MARKET_LABEL[sym.market] || sym.market}） 単元: ${sym.unit_size}株 / 通貨: ${sym.currency}`
-    : !orderState.code
+    ? `コード: ${sym.code}（${sym.symbol}） ・ ${MARKET_LABEL[sym.market] || sym.market} ・ 単元: ${sym.unit_size}株 / 通貨: ${sym.currency}`
+    : !orderState.code && !orderState.query
       ? '銘柄名・ティッカー・コードを入力してください'
       : st.state === 'ready'
         ? '該当する銘柄が見つかりません。候補から選んでください'
