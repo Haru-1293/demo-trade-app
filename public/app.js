@@ -1299,6 +1299,7 @@ function renderSettings(main) {
         <div class="form-group">
           <label>新しいパスワード</label>
           <input type="password" id="new-pass">
+          <ul class="req-list"><li>8〜128文字</li></ul>
         </div>
         <button class="btn btn-primary" id="pass-submit">変更する</button>
       </div>
@@ -1636,16 +1637,28 @@ function renderAuth() {
       </div>
       <div class="form-group">
         <label>ユーザー名</label>
-        <input type="text" id="auth-username">
+        <input type="text" id="auth-username" ${isLogin ? '' : 'autocomplete="username" aria-describedby="req-username"'}>
+        ${isLogin ? '' : `
+        <ul class="req-list" id="req-username" aria-live="polite">
+          <li data-req="u-len">3〜32文字</li>
+          <li data-req="u-chars">文字・数字（日本語も可）と「_」「.」「-」だけ</li>
+        </ul>`}
       </div>
       <div class="form-group">
         <label>パスワード</label>
-        <input type="password" id="auth-password" autocomplete="${isLogin ? 'current-password' : 'new-password'}">
+        <input type="password" id="auth-password" autocomplete="${isLogin ? 'current-password' : 'new-password'}" ${isLogin ? '' : 'aria-describedby="req-password"'}>
+        ${isLogin ? '' : `
+        <ul class="req-list" id="req-password" aria-live="polite">
+          <li data-req="p-len">8〜128文字</li>
+        </ul>`}
       </div>
       ${isLogin ? '' : `
       <div class="form-group">
         <label>パスワード（確認）</label>
-        <input type="password" id="auth-password-confirm" autocomplete="new-password">
+        <input type="password" id="auth-password-confirm" autocomplete="new-password" aria-describedby="req-confirm">
+        <ul class="req-list" id="req-confirm" aria-live="polite">
+          <li data-req="p-match">上のパスワードと同じ</li>
+        </ul>
       </div>`}
       <div class="form-group" id="turnstile-container">
         <div id="turnstile-widget"></div>
@@ -1661,6 +1674,7 @@ function renderAuth() {
     </div>
   `;
   renderTurnstile();
+  if (!isLogin) bindRegisterRequirements();
   const passkeyBtn = document.getElementById('passkey-login-btn');
   if (passkeyBtn) passkeyBtn.addEventListener('click', loginWithPasskey);
   document.getElementById('auth-switch-btn').addEventListener('click', () => {
@@ -1693,6 +1707,27 @@ function renderAuth() {
       resetTurnstileToken(); // トークンは1回限り有効なので再取得させる
     }
   });
+}
+
+// 登録画面の入力条件。常に表示し、入力に合わせて満たした項目に✓を付ける（サーバー側の検証は src/services/validation.ts）
+function bindRegisterRequirements() {
+  const user = document.getElementById('auth-username');
+  const pass = document.getElementById('auth-password');
+  const conf = document.getElementById('auth-password-confirm');
+  const mark = (key, ok, touched) => {
+    const li = document.querySelector(`[data-req="${key}"]`);
+    if (!li) return;
+    li.classList.toggle('ok', touched && ok);
+    li.classList.toggle('ng', touched && !ok);
+  };
+  const update = () => {
+    const u = user.value.trim();
+    mark('u-len', u.length >= 3 && u.length <= 32, u.length > 0);
+    mark('u-chars', /^[\p{L}\p{N}_.\-]*$/u.test(u), u.length > 0);
+    mark('p-len', pass.value.length >= 8 && pass.value.length <= 128, pass.value.length > 0);
+    mark('p-match', conf.value === pass.value, conf.value.length > 0);
+  };
+  [user, pass, conf].forEach((el) => el.addEventListener('input', update));
 }
 
 // Turnstileのコールバック（Turnstileのscriptタグ読み込み後にグローバルとして呼ばれる）
