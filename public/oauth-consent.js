@@ -141,4 +141,10 @@ async function main() {
   });
 }
 
-main();
+// クリックジャッキング対策（多層防御）。HTTPヘッダー（frame-ancestors 'none'・X-Frame-Options: DENY）が主で、
+// 何らかの理由でヘッダーが付かない場合に備え、他のページに埋め込まれているときは承認画面を出さない
+if (window.top !== window.self) {
+  app.innerHTML = '<div class="consent-screen"><div class="consent-error">この画面は、他のページの中では表示できません。</div></div>';
+} else {
+  main();
+}
