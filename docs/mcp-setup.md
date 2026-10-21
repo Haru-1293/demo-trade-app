@@ -149,6 +149,7 @@ curl -s -X POST https://demo-trade-app.haru-tkh11.workers.dev/oauth/register \
 | `place_market_order` | `trade:write` | 成行注文 |
 | `place_limit_order` | `trade:write` | 指値注文（`BUY_LIMIT` / `SELL_LIMIT`） |
 | `cancel_order` | `trade:write` | 未約定の注文を取り消す |
+| `modify_order` | `trade:write` | 未約定の指値注文の価格・数量・有効期限を変える |
 
 付与された権限で使えないツールは、一覧に表示されません。
 

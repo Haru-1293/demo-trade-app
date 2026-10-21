@@ -1,6 +1,7 @@
 import type { Env, OrderRow } from '../types';
 import { getOhlcHistory, getUsdJpyRate } from './marketData';
 import { currencyOf, settlementCurrencyOf, buildSellStatements, type HoldLot } from './balance';
+import { orderStateGuard, isStateChangedError } from './orderGuard';
 
 /**
  * 仕様書 4.4: ユーザーのアクセス（ログイン/portfolio/orders取得）をトリガーに、
@@ -50,7 +51,8 @@ async function checkOneOrder(env: Env, order: OrderRow, now: number): Promise<vo
     await executeLimitOrder(env, order, now);
   } else {
     // 約定・非約定にかかわらず checked_until の更新は必須（4.4、二重判定防止）
-    await db.prepare(`UPDATE orders SET checked_until = ? WHERE id = ?`).bind(to, order.id).run();
+    // 判定の途中で注文が修正されて checked_until が進んでいても、戻さない（修正前のデータで新しい条件を遡及判定しないため）
+    await db.prepare(`UPDATE orders SET checked_until = MAX(COALESCE(checked_until, 0), ?) WHERE id = ? AND status = 'PENDING'`).bind(to, order.id).run();
   }
 }
 
@@ -73,6 +75,7 @@ async function executeLimitOrder(env: Env, order: OrderRow, now: number): Promis
     const today = new Date().toISOString().slice(0, 10);
     // locked_amount_c は「指値×数量」で確保済みのため、指値どおり約定するMVPでは差額は生じない
     const stmts = [
+      orderStateGuard(db, order), // 判定中に取消・修正・他の判定が先に終わっていたら、全体を巻き戻す
       db
         .prepare(
           `INSERT INTO trades (id, user_id, code, symbol, name, market, quantity, locked_quantity,
@@ -86,7 +89,7 @@ async function executeLimitOrder(env: Env, order: OrderRow, now: number): Promis
         )
         .bind(executedPrice, now, rate, now, order.id),
     ];
-    await db.batch(stmts);
+    await runGuarded(db, stmts);
     return;
   }
 
@@ -122,6 +125,7 @@ async function executeLimitOrder(env: Env, order: OrderRow, now: number): Promis
   const column = currency === 'JPY' ? 'cash_balance_jpy_c' : 'cash_balance_usd_c';
 
   const stmts = [
+    orderStateGuard(db, order),
     ...sellStmts,
     db.prepare(`UPDATE users SET ${column} = ${column} + ? WHERE id = ?`).bind(proceedsC, order.user_id),
     db
@@ -130,11 +134,11 @@ async function executeLimitOrder(env: Env, order: OrderRow, now: number): Promis
       )
       .bind(executedPrice, now, rate, now, order.id),
   ];
-  await db.batch(stmts);
+  await runGuarded(db, stmts);
 }
 
 async function expireOrder(db: D1Database, order: OrderRow): Promise<void> {
-  const stmts = [db.prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?`).bind(order.id)];
+  const stmts = [orderStateGuard(db, order), db.prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?`).bind(order.id)];
 
   if (order.order_type === 'BUY_LIMIT' && order.locked_amount_c > 0) {
     // 円貨決済(settlement_currency='JPY')ならJPYで返却、それ以外は銘柄本来通貨で返却（仕様書4.9）
@@ -152,5 +156,50 @@ async function expireOrder(db: D1Database, order: OrderRow): Promise<void> {
     }
   }
 
-  await db.batch(stmts);
+  await runGuarded(db, stmts);
+}
+
+/** 先頭の状態確認で注文が変わっていたと分かった場合だけ、何もせずに終える（他のエラーはそのまま投げる） */
+async function runGuarded(db: D1Database, stmts: D1PreparedStatement[]): Promise<void> {
+  try {
+    await db.batch(stmts);
+  } catch (e) {
+    if (isStateChangedError(e)) return;
+    throw e;
+  }
+}
+
+/**
+ * 注文を修正する前の確認。前回の判定以降の値動きを、修正前の条件で先に判定する（修正後の条件で過去の値動きを判定しないため）。
+ * - 'gone': 判定の結果、約定・期限切れになった（修正できない）
+ * - 'unverified': 値動きのデータを取得できず、判定が完了していない（あとでやり直してもらう）
+ * - 'ok': 修正してよい
+ */
+export async function verifyOrderBeforeChange(env: Env, order: OrderRow): Promise<'ok' | 'gone' | 'unverified'> {
+  const db = env.DB;
+  const now = Math.floor(Date.now() / 1000);
+  if (order.expires_at != null && now >= order.expires_at) {
+    await expireOrder(db, order);
+    return 'gone';
+  }
+  const from = order.checked_until ?? order.ordered_at;
+  const to = Math.min(now, order.expires_at ?? now);
+  if (from >= to) return 'ok';
+
+  const ohlc = await getOhlcHistory(order.symbol, from, to);
+  if (!ohlc) return 'unverified';
+  if (ohlc.length === 0) return 'ok'; // この期間に値動きが無い（取引時間外など）
+
+  const low = Math.min(...ohlc.map((p) => p.low));
+  const high = Math.max(...ohlc.map((p) => p.high));
+  const targetPrice = order.target_price ?? 0;
+  const hit =
+    (order.order_type === 'BUY_LIMIT' && low <= targetPrice) ||
+    (order.order_type === 'SELL_LIMIT' && high >= targetPrice);
+  if (!hit) return 'ok';
+
+  await executeLimitOrder(env, order, now);
+  const after = await db.prepare(`SELECT status FROM orders WHERE id = ?`).bind(order.id).first<{ status: string }>();
+  // 為替が取れず約定を見送った場合は、まだPENDING。判定が済んでいないので修正させない
+  return after?.status === 'PENDING' ? 'unverified' : 'gone';
 }

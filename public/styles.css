@@ -375,6 +375,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 
 /* 保有銘柄行のアクションボタン（追加購入／売却） */
 .row-actions { display: flex; gap: 8px; margin-top: 8px; }
+.list-row > .row-actions { margin-top: 0; flex-shrink: 0; }
 .row-action-btn {
   border: 1px solid var(--primary);
   background: transparent;

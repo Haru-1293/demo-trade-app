@@ -1,6 +1,6 @@
 import type { Env } from '../types';
 import { unixToLocalDateStr } from './timezone';
-import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, type HoldLot } from './valuation';
+import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, fetchLockedFunds, type HoldLot } from './valuation';
 
 /** 仕様書 7.4: スナップショットの日付基準はJST */
 export function snapshotDateJst(nowUnix: number): string {
@@ -73,6 +73,7 @@ export async function takeAssetSnapshots(env: Env): Promise<{ count: number; ski
     return { count: 0, skipped: 'usd/jpy rate unavailable' };
   }
   const date = snapshotDateJst(Math.floor(Date.now() / 1000));
+  const lockedByUser = await fetchLockedFunds(env.DB); // 注文中の拘束資金も総資産に含める
 
   const stmts = users.map((u) => {
     const v = valueHoldings(lotsByUser.get(u.id) ?? [], priceMap, usdJpy);
@@ -84,7 +85,7 @@ export async function takeAssetSnapshots(env: Env): Promise<{ count: number; ski
         cashJpyC: u.cash_balance_jpy_c,
         cashUsdC: u.cash_balance_usd_c,
         valuationJpyC: v.valuationJpyC,
-        totalJpyC: totalAssetsJpyC(u.cash_balance_jpy_c, u.cash_balance_usd_c, usdJpy, v.valuationJpyC),
+        totalJpyC: totalAssetsJpyC(u.cash_balance_jpy_c, u.cash_balance_usd_c, usdJpy, v.valuationJpyC, lockedByUser.get(u.id)),
       },
       true,
     );

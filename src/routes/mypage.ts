@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { requireAuth } from '../middleware/auth';
-import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, type HoldLot } from '../services/valuation';
+import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, fetchLockedFunds, type HoldLot } from '../services/valuation';
 import { buildSnapshotStatement, snapshotDateJst } from '../services/snapshot';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -32,8 +32,10 @@ app.get('/mypage', requireAuth, async (c) => {
 
   const { priceMap, usdJpy, usdJpyAsOf } = await fetchPricesAndRate(c.env, lots.map((l) => l.symbol));
   const v = valueHoldings(lots, priceMap, usdJpy);
+  // 指値買いで拘束中の資金も総資産に含める（現金からは差し引かれているため）
+  const locked = (await fetchLockedFunds(c.env.DB, auth.userId)).get(auth.userId) ?? { jpyC: 0, usdC: 0 };
   const total =
-    usdJpy === null ? null : totalAssetsJpyC(user.cash_balance_jpy_c, user.cash_balance_usd_c, usdJpy, v.valuationJpyC);
+    usdJpy === null ? null : totalAssetsJpyC(user.cash_balance_jpy_c, user.cash_balance_usd_c, usdJpy, v.valuationJpyC, locked);
 
   // 新規ユーザー・機能追加直後でもグラフが空にならないよう、当日分が無ければ補完する（Cronの値は上書きしない）
   if (total !== null) {
@@ -62,6 +64,8 @@ app.get('/mypage', requireAuth, async (c) => {
   return c.json({
     cash_jpy_c: user.cash_balance_jpy_c,
     cash_usd_c: user.cash_balance_usd_c,
+    locked_jpy_c: locked.jpyC, // 注文中（指値買いの未約定）で拘束している資金。総資産に含まれる
+    locked_usd_c: locked.usdC,
     usd_jpy: usdJpy,
     usd_jpy_as_of: usdJpyAsOf,
     // 銘柄ごとの内訳。クライアントはWSSで受信済みのライブ価格があれば、これを使って評価額を再計算する

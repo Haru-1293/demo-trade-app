@@ -10,6 +10,8 @@ import {
 } from './balance';
 import { getCurrentPrice, getUsdJpyRate } from './marketData';
 import { timeZoneOf, localEndOfDayToUnix, isWithinExpiryRange } from './timezone';
+import { verifyOrderBeforeChange } from './limitCheck';
+import { orderStateGuard, requireChangesGuard, sellableCapacityGuard, isStateChangedError } from './orderGuard';
 
 /**
  * 注文の実処理（仕様書4.2 / 4.3 / 4.9）。Web画面の `/api/orders/*`（routes/orders.ts）と
@@ -302,6 +304,8 @@ export async function cancelOrder(env: Env, userId: string, orderId: string): Pr
   if (order.status !== 'PENDING') return fail(400, 'order is not cancellable');
 
   const stmts = [
+    // 取消の間に注文が修正・約定されていたら、古い拘束額を返してしまわないよう全体を巻き戻す
+    orderStateGuard(env.DB, order),
     env.DB.prepare(`UPDATE orders SET status = 'CANCELLED' WHERE id = ? AND status = 'PENDING'`).bind(order.id),
   ];
 
@@ -321,6 +325,169 @@ export async function cancelOrder(env: Env, userId: string, orderId: string): Pr
     }
   }
 
-  await env.DB.batch(stmts);
+  try {
+    await env.DB.batch(stmts);
+  } catch (e) {
+    if (!isStateChangedError(e)) throw e;
+    const now = await env.DB.prepare(`SELECT status FROM orders WHERE id = ?`).bind(order.id).first<{ status: string }>();
+    return now?.status === 'PENDING'
+      ? fail(409, 'order was changed; please retry')
+      : fail(400, 'order is not cancellable');
+  }
   return { status: 200, body: { ok: true } };
+}
+
+interface LockPlanEntry { tradeId: string; lockQty: number }
+
+/**
+ * 未約定の指値注文の修正 — 仕様書4.3.1
+ * 変えられるのは、指値価格(target_price)・数量(quantity)・有効期限(expires_date)。銘柄・売買の方向・決済通貨は変えられない
+ * （変えたいときは取り消して出し直す）。
+ *
+ * - 修正の前に、前回の判定以降の値動きを、修正前の条件で判定する。すでに約定・期限切れなら修正できない。
+ *   値動きのデータを取れないときは、判定を済ませないまま条件を変えられるのを防ぐため、修正を断る（503）。
+ * - 修正後の条件は、修正した時点から先の値動きだけで判定する（checked_until を現在時刻にする）。
+ * - 買い: 拘束額(locked_amount_c)を「新しい指値×数量」に合わせ、差額だけ現金から追加で拘束／返却する。
+ *   円貨決済の米国株は、為替レートを修正時点のレートで固定し直す。
+ * - 売り: 数量を増やすときは売却可能株数からFIFOで追加ロックし、減らすときはロックの後ろから解除する。
+ * すべて1つのbatch（トランザクション）で行い、先頭の状態確認で、その間に注文が変わっていたら全体を巻き戻す。
+ */
+export async function modifyLimitOrder(env: Env, userId: string, orderId: string, input: unknown): Promise<OrderResult> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return fail(400, 'invalid body');
+  const body = input as Record<string, unknown>;
+  for (const k of Object.keys(body)) {
+    if (k !== 'target_price' && k !== 'quantity' && k !== 'expires_date') return fail(400, `cannot modify: ${k.slice(0, 40)}`);
+  }
+  if (body.target_price === undefined && body.quantity === undefined && body.expires_date === undefined) {
+    return fail(400, 'nothing to modify');
+  }
+  if (body.target_price !== undefined) {
+    const p = body.target_price;
+    if (typeof p !== 'number' || !Number.isFinite(p) || !(p > 0) || p > 1e9) return fail(400, 'invalid target_price');
+  }
+  if (body.quantity !== undefined) {
+    const q = body.quantity;
+    if (!Number.isInteger(q) || (q as number) <= 0 || (q as number) > MAX_ORDER_QUANTITY) return fail(400, 'invalid quantity');
+  }
+  if (body.expires_date !== undefined && typeof body.expires_date !== 'string') return fail(400, 'invalid expires_date');
+
+  const first = await env.DB.prepare(`SELECT * FROM orders WHERE id = ? AND user_id = ?`).bind(orderId, userId).first<OrderRow>();
+  if (!first) return fail(404, 'not found');
+  if (first.status !== 'PENDING' || (first.order_type !== 'BUY_LIMIT' && first.order_type !== 'SELL_LIMIT')) {
+    return fail(400, 'order is not modifiable');
+  }
+
+  const verdict = await verifyOrderBeforeChange(env, first);
+  if (verdict === 'gone') return fail(409, 'order is no longer pending (executed or expired)');
+  if (verdict === 'unverified') return fail(503, 'market data unavailable; try again later');
+
+  // 判定で更新された可能性があるので、最新の内容を読み直す
+  const order = await env.DB.prepare(`SELECT * FROM orders WHERE id = ? AND user_id = ?`).bind(orderId, userId).first<OrderRow>();
+  if (!order || order.status !== 'PENDING') return fail(409, 'order is no longer pending (executed or expired)');
+
+  const now = Math.floor(Date.now() / 1000);
+  const newPrice = (body.target_price as number | undefined) ?? (order.target_price as number);
+  const newQty = (body.quantity as number | undefined) ?? order.quantity;
+  let newExpiresAt = order.expires_at;
+  if (body.expires_date !== undefined) {
+    const tz = timeZoneOf(order.market);
+    const maxDays = Number(env.ORDER_EXPIRY_MAX_DAYS || '14');
+    if (!isWithinExpiryRange(body.expires_date as string, tz, now, maxDays)) {
+      return fail(400, `有効期限は当日から${maxDays}日先までの日付で指定してください`);
+    }
+    newExpiresAt = localEndOfDayToUnix(body.expires_date as string, tz);
+  }
+  if (newPrice === order.target_price && newQty === order.quantity && newExpiresAt === order.expires_at) {
+    return fail(400, 'no changes');
+  }
+
+  const db = env.DB;
+  const stmts: D1PreparedStatement[] = [orderStateGuard(db, order)];
+  let newLockedC = order.locked_amount_c;
+  let newLockedLots = order.locked_lots;
+
+  if (order.order_type === 'BUY_LIMIT') {
+    if (newPrice !== order.target_price || newQty !== order.quantity) {
+      let rate = 1;
+      if (order.settlement_currency === 'JPY') {
+        const fx = await getUsdJpyRate(env);
+        if (!fx) return fail(503, 'fx data unavailable');
+        rate = fx.price; // 円貨決済: 修正時点のレートで固定し直す
+      }
+      newLockedC = toAmountC(newPrice, newQty, rate);
+    }
+    const delta = newLockedC - order.locked_amount_c;
+    const column = cashColumn(settlementCurrencyOf(order.market, order.settlement_currency));
+    if (delta > 0) {
+      stmts.push(
+        db.prepare(`UPDATE users SET ${column} = ${column} - ?, updated_at = ? WHERE id = ? AND ${column} >= ?`).bind(delta, now, userId, delta),
+        requireChangesGuard(db), // 残高不足なら全体を巻き戻す
+      );
+    } else if (delta < 0) {
+      stmts.push(db.prepare(`UPDATE users SET ${column} = ${column} + ?, updated_at = ? WHERE id = ?`).bind(-delta, now, userId));
+    }
+  } else if (newQty !== order.quantity) {
+    // SELL_LIMIT: 株数のロックを増減する
+    const plan: LockPlanEntry[] = order.locked_lots ? (JSON.parse(order.locked_lots) as LockPlanEntry[]).map((p) => ({ ...p })) : [];
+    if (!plan.length) return fail(500, 'order lock data is missing');
+    if (newQty < order.quantity) {
+      let release = order.quantity - newQty;
+      for (let i = plan.length - 1; i >= 0 && release > 0; i--) {
+        const take = Math.min(plan[i]!.lockQty, release);
+        plan[i]!.lockQty -= take;
+        release -= take;
+        stmts.push(db.prepare(`UPDATE trades SET locked_quantity = locked_quantity - ? WHERE id = ?`).bind(take, plan[i]!.tradeId));
+      }
+    } else {
+      const { results } = await db
+        .prepare(
+          `SELECT id, quantity, locked_quantity FROM trades
+            WHERE user_id = ? AND code = ? AND market = ? AND status = 'HOLD' AND quantity > locked_quantity
+            ORDER BY buy_date ASC`,
+        )
+        .bind(userId, order.code, order.market)
+        .all<{ id: string; quantity: number; locked_quantity: number }>();
+      let need = newQty - order.quantity;
+      for (const row of results ?? []) {
+        if (need <= 0) break;
+        const take = Math.min(row.quantity - row.locked_quantity, need);
+        if (take <= 0) continue;
+        need -= take;
+        const existing = plan.find((p) => p.tradeId === row.id);
+        if (existing) existing.lockQty += take;
+        else plan.push({ tradeId: row.id, lockQty: take });
+        stmts.push(
+          sellableCapacityGuard(db, row.id, take), // 他の注文が先にロックして足りなくなっていたら全体を巻き戻す
+          db.prepare(`UPDATE trades SET locked_quantity = locked_quantity + ? WHERE id = ?`).bind(take, row.id),
+        );
+      }
+      if (need > 0) return fail(400, 'insufficient sellable quantity');
+    }
+    newLockedLots = JSON.stringify(plan.filter((p) => p.lockQty > 0));
+  }
+
+  // checked_until を現在時刻にして、修正後の条件は、いまから先の値動きだけで判定する
+  stmts.push(
+    db
+      .prepare(
+        `UPDATE orders SET target_price = ?, quantity = ?, locked_amount_c = ?, locked_lots = ?, expires_at = ?, checked_until = ?
+          WHERE id = ? AND user_id = ? AND status = 'PENDING'`,
+      )
+      .bind(newPrice, newQty, newLockedC, newLockedLots, newExpiresAt, now, order.id, userId),
+  );
+
+  try {
+    await db.batch(stmts);
+  } catch (e) {
+    if (!isStateChangedError(e)) throw e;
+    // 状態確認の失敗（別の処理が注文を変えた）か、残高不足による巻き戻しかを、読み直して見分ける
+    const cur = await db.prepare(`SELECT * FROM orders WHERE id = ?`).bind(order.id).first<OrderRow>();
+    const same = cur && cur.status === 'PENDING' && cur.quantity === order.quantity && cur.target_price === order.target_price &&
+      cur.locked_amount_c === order.locked_amount_c && cur.expires_at === order.expires_at;
+    if (same) return fail(400, order.order_type === 'BUY_LIMIT' ? 'insufficient funds' : 'insufficient sellable quantity');
+    return fail(409, 'order was changed; please retry');
+  }
+
+  const updated = await db.prepare(`SELECT * FROM orders WHERE id = ?`).bind(order.id).first();
+  return { status: 200, body: { ok: true, order: updated } };
 }

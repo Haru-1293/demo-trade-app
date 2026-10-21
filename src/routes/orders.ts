@@ -3,7 +3,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { requireCsrf } from '../middleware/csrf';
-import { placeMarketOrder, placeLimitOrder, cancelOrder, type OrderResult } from '../services/orderService';
+import { placeMarketOrder, placeLimitOrder, cancelOrder, modifyLimitOrder, type OrderResult } from '../services/orderService';
 
 /**
  * 注文API。実処理は services/orderService.ts（MCPのツールと共用、仕様書4.18）。
@@ -32,6 +32,13 @@ app.post('/orders/limit', requireCsrf, requireAuth, async (c) => {
 });
 
 /** POST /api/orders/:id/cancel — 仕様書4.3 / 4.9 */
+/** PATCH /api/orders/:id — 未約定の指値注文の修正（指値価格・数量・有効期限。仕様書4.3.1） */
+app.patch('/orders/:id', requireCsrf, requireAuth, async (c) => {
+  const auth = c.get('auth');
+  const body = await c.req.json().catch(() => null);
+  return respond(c, await modifyLimitOrder(c.env, auth.userId, c.req.param('id'), body));
+});
+
 app.post('/orders/:id/cancel', requireCsrf, requireAuth, async (c) => {
   const auth = c.get('auth');
   return respond(c, await cancelOrder(c.env, auth.userId, c.req.param('id')));

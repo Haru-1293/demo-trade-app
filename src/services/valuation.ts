@@ -1,5 +1,6 @@
 import type { Env } from '../types';
 import { getDisplayPrices, type DisplayPrice } from './marketData';
+import { settlementCurrencyOf } from './balance';
 
 /**
  * 仕様書 4.11: 評価額・評価損益の計算。
@@ -91,7 +92,43 @@ export function valueHoldings(
   };
 }
 
-/** 総資産(円換算) = 円残高 + USD残高×為替 + 評価額 */
-export function totalAssetsJpyC(cashJpyC: number, cashUsdC: number, usdJpy: number, valuationJpyC: number): number {
-  return cashJpyC + Math.floor(cashUsdC * usdJpy) + valuationJpyC;
+/** 指値買いの未約定注文（PENDING）が拘束している資金（通貨ごと、銭・セント単位） */
+export interface LockedFunds {
+  jpyC: number;
+  usdC: number;
+}
+
+/**
+ * 未約定の指値買いが拘束している資金を集計する（仕様書4.3 / 4.9）。userId省略時は全ユーザー分。
+ * 注文時に現金から差し引かれているので、総資産には含めて数える（約定すれば保有株、取消・期限切れなら現金に戻るお金）。
+ * 円貨決済の米国株買いは円で拘束している。
+ */
+export async function fetchLockedFunds(db: D1Database, userId?: string): Promise<Map<string, LockedFunds>> {
+  const { results } = await db
+    .prepare(
+      `SELECT user_id, market, settlement_currency, SUM(locked_amount_c) AS amount
+         FROM orders WHERE status = 'PENDING' AND order_type = 'BUY_LIMIT' ${userId ? 'AND user_id = ?' : ''}
+        GROUP BY user_id, market, settlement_currency`,
+    )
+    .bind(...(userId ? [userId] : []))
+    .all<{ user_id: string; market: 'JP' | 'US'; settlement_currency: 'NATIVE' | 'JPY'; amount: number }>();
+  const out = new Map<string, LockedFunds>();
+  for (const r of results ?? []) {
+    const f = out.get(r.user_id) ?? { jpyC: 0, usdC: 0 };
+    if (settlementCurrencyOf(r.market, r.settlement_currency) === 'JPY') f.jpyC += r.amount;
+    else f.usdC += r.amount;
+    out.set(r.user_id, f);
+  }
+  return out;
+}
+
+/** 総資産(円換算) = (円残高 + 拘束中の円) + (USD残高 + 拘束中のUSD)×為替 + 評価額 */
+export function totalAssetsJpyC(
+  cashJpyC: number,
+  cashUsdC: number,
+  usdJpy: number,
+  valuationJpyC: number,
+  locked: LockedFunds = { jpyC: 0, usdC: 0 },
+): number {
+  return cashJpyC + locked.jpyC + Math.floor((cashUsdC + locked.usdC) * usdJpy) + valuationJpyC;
 }

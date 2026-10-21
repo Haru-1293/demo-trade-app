@@ -1,10 +1,10 @@
 import type { Env, OrderRow } from '../types';
 import type { Scope } from '../services/oauth';
 import { checkPendingLimitOrders } from '../services/limitCheck';
-import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, type HoldLot } from '../services/valuation';
+import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, fetchLockedFunds, type HoldLot } from '../services/valuation';
 import { getDisplayPrices } from '../services/marketData';
 import { settlementCurrencyOf } from '../services/balance';
-import { placeMarketOrder, placeLimitOrder, cancelOrder } from '../services/orderService';
+import { placeMarketOrder, placeLimitOrder, cancelOrder, modifyLimitOrder } from '../services/orderService';
 
 /**
  * MCPのツール定義（仕様書4.18）。各ツールは必要なスコープを持ち、tools/list は付与された範囲だけを返す。
@@ -110,7 +110,7 @@ export const TOOLS: ToolDef[] = [
     title: '資産サマリー',
     description:
       'デモ口座の現金（円・ドル）、総資産（円換算）、保有株の評価額・取得原価・評価損益、USD/JPYを返す。' +
-      '指値注文でロック中の買い付け資金は現金に含まれず、locked_in_pending_buy_orders に別掲する。',
+      '指値注文でロック中の買い付け資金は現金（cash）には含まれず、locked_in_pending_buy_orders に別掲する。総資産（total_assets_jpy）にはロック中の資金も含まれる。',
     scope: 'portfolio:read',
     inputSchema: { type: 'object', additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: true },
@@ -124,17 +124,11 @@ export const TOOLS: ToolDef[] = [
       ).bind(userId).all<HoldLot>();
       const { priceMap, usdJpy, usdJpyAsOf } = await fetchPricesAndRate(env, lots.map((l) => l.symbol));
       const v = valueHoldings(lots, priceMap, usdJpy);
-      const total = usdJpy === null ? null : totalAssetsJpyC(user.cash_balance_jpy_c, user.cash_balance_usd_c, usdJpy, v.valuationJpyC);
-
-      const { results: pending } = await env.DB.prepare(
-        `SELECT market, settlement_currency, locked_amount_c FROM orders WHERE user_id = ? AND status = 'PENDING' AND order_type = 'BUY_LIMIT'`,
-      ).bind(userId).all<{ market: 'JP' | 'US'; settlement_currency: 'NATIVE' | 'JPY'; locked_amount_c: number }>();
-      let lockedJpy = 0;
-      let lockedUsd = 0;
-      for (const o of pending) {
-        if (settlementCurrencyOf(o.market, o.settlement_currency) === 'JPY') lockedJpy += o.locked_amount_c;
-        else lockedUsd += o.locked_amount_c;
-      }
+      // 指値買いの未約定注文が拘束している資金（現金からは差し引かれている）。総資産には含める
+      const locked = (await fetchLockedFunds(env.DB, userId)).get(userId) ?? { jpyC: 0, usdC: 0 };
+      const total = usdJpy === null ? null : totalAssetsJpyC(user.cash_balance_jpy_c, user.cash_balance_usd_c, usdJpy, v.valuationJpyC, locked);
+      const lockedJpy = locked.jpyC;
+      const lockedUsd = locked.usdC;
 
       return {
         cash: { jpy: money(user.cash_balance_jpy_c), usd: money(user.cash_balance_usd_c) },
@@ -389,6 +383,31 @@ export const TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async run({ env, userId }, args) {
       return orderOutcome(await cancelOrder(env, userId, reqString(args, 'order_id', 100)));
+    },
+  },
+  {
+    name: 'modify_order',
+    title: '注文の修正',
+    description:
+      '未約定(PENDING)の指値注文の指値価格・数量・有効期限を変更する（銘柄・売買・決済通貨は変えられない）。' +
+      '買いは拘束資金の差額を現金から追加で拘束／返却し、売りは株数のロックを増減する。' +
+      '修正後の条件は修正した時点から先の値動きで判定される。すでに約定・期限切れの注文は修正できない。',
+    scope: 'trade:write',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        order_id: { type: 'string', maxLength: 100 },
+        target_price: { type: 'number', exclusiveMinimum: 0 },
+        quantity: { type: 'integer', minimum: 1 },
+        expires_date: { type: 'string', description: '取引所現地日付 YYYY-MM-DD（当日から14日先まで）' },
+      },
+      required: ['order_id'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    async run({ env, userId }, args) {
+      const { order_id, ...changes } = args as Record<string, unknown>;
+      return orderOutcome(await modifyLimitOrder(env, userId, reqString(args, 'order_id', 100), changes));
     },
   },
 ];

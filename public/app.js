@@ -250,6 +250,7 @@ async function renderMypage(main) {
         <div class="stat"><div class="stat-label">現金（円）</div><div class="stat-value" id="mp-cash-jpy">${sk(80)}</div></div>
         <div class="stat"><div class="stat-label">現金（ドル）</div><div class="stat-value" id="mp-cash-usd">${sk(70)}</div></div>
         <div class="stat"><div class="stat-label">保有評価額</div><div class="stat-value" id="mp-valuation">${sk(80)}</div></div>
+        <div class="stat"><div class="stat-label">注文中の拘束資金（総資産に含む）</div><div class="stat-value" id="mp-locked">${sk(80)}</div></div>
         <div class="stat"><div class="stat-label">USD/JPY</div><div class="stat-value" id="mp-rate">${sk(50)}</div></div>
       </div>
 
@@ -286,7 +287,7 @@ async function renderMypage(main) {
     if (state.tab !== 'mypage' || !document.getElementById('mp-total')) return;
     document.getElementById('mp-total').textContent = '--';
     document.getElementById('mp-pnl').textContent = '--';
-    ['mp-cash-jpy', 'mp-cash-usd', 'mp-valuation', 'mp-rate'].forEach((id) => { document.getElementById(id).textContent = '--'; });
+    ['mp-cash-jpy', 'mp-cash-usd', 'mp-valuation', 'mp-locked', 'mp-rate'].forEach((id) => { document.getElementById(id).textContent = '--'; });
     document.getElementById('mypage-chart').innerHTML = `<div class="empty-hint">読み込みに失敗しました: ${escapeHtml(e.message)}</div>`;
     return;
   }
@@ -304,6 +305,7 @@ async function renderMypage(main) {
   document.getElementById('mp-cash-jpy').textContent = yen(d.cash_jpy_c);
   document.getElementById('mp-cash-usd').textContent = usd(d.cash_usd_c);
   document.getElementById('mp-valuation').textContent = yen(d.valuation_jpy_c);
+  document.getElementById('mp-locked').textContent = lockedText(d);
   document.getElementById('mp-rate').textContent = d.usd_jpy == null ? '--' : d.usd_jpy.toFixed(2);
   drawChart();
 
@@ -317,6 +319,14 @@ async function renderMypage(main) {
 
 let mypageData = null;
 let mypageRecalcQueued = false;
+
+// 注文中（指値買いの未約定）で拘束している資金の表示。円とドルで別々に持つ
+function lockedText(d) {
+  const parts = [];
+  if (d.locked_jpy_c > 0) parts.push(yen(d.locked_jpy_c));
+  if (d.locked_usd_c > 0) parts.push(usd(d.locked_usd_c));
+  return parts.length ? parts.join(' + ') : 'なし';
+}
 
 function pnlParts(pnlC, costC) {
   const pct = costC > 0 ? (pnlC / costC) * 100 : null;
@@ -358,7 +368,8 @@ function recalcMypage() {
   }
 
   if (rate != null) {
-    const total = d.cash_jpy_c + Math.floor(d.cash_usd_c * rate) + valuation;
+    // 総資産 = 現金 + 注文中の拘束資金 + 評価額（拘束資金は現金から差し引かれているが、資産としては持っている）
+    const total = d.cash_jpy_c + (d.locked_jpy_c || 0) + Math.floor((d.cash_usd_c + (d.locked_usd_c || 0)) * rate) + valuation;
     document.getElementById('mp-total').textContent = yen(total);
     document.getElementById('mp-rate').textContent = rate.toFixed(2);
   }
@@ -1212,11 +1223,13 @@ async function renderHistory(main) {
             <div class="name">${escapeHtml(symbolDisplayName(o.market, o.code, o.symbol))} <span class="badge ${escapeHtml(o.status)}">${escapeHtml(o.status)}</span></div>
             <div class="sub">${escapeHtml(o.code)} ・ ${escapeHtml(o.order_type)} / ${escapeHtml(o.quantity)}株${o.target_price ? ` @ ${escapeHtml(o.target_price)}` : ''}</div>
           </div>
-          ${o.status === 'PENDING' ? `<button class="btn-link" data-cancel="${escapeHtml(o.id)}">取消</button>` : ''}
+          ${o.status === 'PENDING' ? `<div class="row-actions"><button class="btn-link" data-modify="${escapeHtml(o.id)}">修正</button><button class="btn-link" data-cancel="${escapeHtml(o.id)}">取消</button></div>` : ''}
         </div>
       `).join('') : `<div class="empty-hint">注文履歴はありません</div>`;
       list.querySelectorAll('[data-cancel]').forEach((b) =>
         b.addEventListener('click', () => cancelOrder(b.dataset.cancel)));
+      list.querySelectorAll('[data-modify]').forEach((b) =>
+        b.addEventListener('click', () => openModifyOrder(orders.find((o) => o.id === b.dataset.modify))));
     } else if (historyState.sub === 'trades') {
       const [{ trades }] = await Promise.all([api('/trades'), ensureSymbolIndex()]);
       list.innerHTML = trades.length ? trades.map((t) => `
@@ -1265,6 +1278,64 @@ function symbolDisplayName(market, code, fallback) {
 // 履歴の描画前に、銘柄インデックスの読み込みを待つ（取得に失敗しても履歴は出す）
 function ensureSymbolIndex() {
   return SymbolIndex.init(() => api('/symbols')).catch(() => {});
+}
+
+// 未約定の指値注文の修正モーダル（価格・数量・有効期限。仕様書4.3.1）
+function openModifyOrder(o) {
+  if (!o) return;
+  const market = o.market;
+  const curDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: market === 'JP' ? 'Asia/Tokyo' : 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(o.expires_at * 1000));
+  const { min } = expiryRange(market);
+  const dates = [];
+  for (let i = 0; i <= ORDER_EXPIRY_MAX_DAYS; i++) dates.push(addDaysStr(min, i));
+  if (!dates.includes(curDate)) dates.unshift(curDate); // 現在の期限が範囲外でも、そのまま残せるように
+  const name = symbolDisplayName(o.market, o.code, o.symbol);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-title">注文の修正</div>
+      <p class="modal-text">${escapeHtml(name)}（${escapeHtml(o.order_type === 'BUY_LIMIT' ? '指値買い' : '指値売り')}）。修正後の条件は、修正した時点から先の値動きで判定されます。${o.order_type === 'BUY_LIMIT' ? '拘束資金は差額だけ増減します。' : ''}</p>
+      <div class="form-group"><label>指値価格</label>
+        <input type="number" id="mod-price" min="0" step="any" inputmode="decimal" value="${escapeHtml(o.target_price)}"></div>
+      <div class="form-group"><label>数量（株）</label>
+        <input type="number" id="mod-qty" min="1" step="1" inputmode="numeric" value="${escapeHtml(o.quantity)}"></div>
+      <div class="form-group"><label>有効期限（${market === 'JP' ? '東京' : 'ニューヨーク'}時間の当日終了まで）</label>
+        <select id="mod-exp">${dates.map((d) => `<option value="${d}"${d === curDate ? ' selected' : ''}>${d}</option>`).join('')}</select></div>
+      <div class="modal-actions">
+        <button class="btn btn-outline" id="mod-cancel">閉じる</button>
+        <button class="btn btn-primary" id="mod-submit">修正する</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById('mod-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('mod-submit').addEventListener('click', async (e) => {
+    const price = Number(document.getElementById('mod-price').value);
+    const qty = Number(document.getElementById('mod-qty').value);
+    const exp = document.getElementById('mod-exp').value;
+    if (!(price > 0)) { toast('指値価格を入力してください'); return; }
+    if (!Number.isInteger(qty) || qty <= 0) { toast('数量は1以上の整数で入力してください'); return; }
+    const body = {};
+    if (price !== Number(o.target_price)) body.target_price = price;
+    if (qty !== o.quantity) body.quantity = qty;
+    if (exp !== curDate) body.expires_date = exp;
+    if (!Object.keys(body).length) { toast('変更がありません'); return; }
+    e.target.disabled = true;
+    try {
+      await api(`/orders/${encodeURIComponent(o.id)}`, { method: 'PATCH', body });
+      close();
+      toast('注文を修正しました');
+      renderHistory(document.getElementById('main'));
+    } catch (err) {
+      e.target.disabled = false;
+      toast(`修正に失敗しました: ${err.message}`);
+    }
+  });
 }
 
 async function cancelOrder(id) {
@@ -1542,7 +1613,7 @@ async function deletePasskey(id) {
 const SCOPE_LABELS = {
   'portfolio:read': '資産・履歴の閲覧',
   'market:read': '銘柄・現在値の閲覧',
-  'trade:write': '注文の発注・取消',
+  'trade:write': '注文の発注・取消・修正',
 };
 
 async function loadGrantList() {
