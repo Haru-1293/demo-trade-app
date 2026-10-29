@@ -677,3 +677,30 @@ input:focus, select:focus { outline: none; border-color: var(--primary); backgro
 .req-list li.ok::before { content: "✓"; font-weight: 700; }
 .req-list li.ng { color: var(--danger); }
 .req-list li.ng::before { content: "✕"; font-weight: 700; }
+
+/* ---------- 複数アカウント（ヘッダーの名前・切り替えシート・設定の一覧） ---------- */
+.account-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 55%;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 999px; padding: 4px 10px 4px 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.account-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-avatar {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--primary); color: #fff; font-size: 13px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; text-transform: uppercase;
+}
+.account-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--border); color: var(--text);
+  padding: 12px 4px; font-size: 15px; cursor: pointer;
+}
+.account-row:last-child { border-bottom: none; }
+.account-row .account-avatar { width: 36px; height: 36px; font-size: 16px; }
+.account-row-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-row-badge { font-size: 11px; font-weight: 700; color: var(--primary); border: 1px solid var(--primary); border-radius: 999px; padding: 2px 8px; }
+.account-row-go { font-size: 12px; color: var(--text-sub); }
+.account-row.active { cursor: default; }
+.sheet-overlay { align-items: flex-end; padding: 0; }
+.sheet { max-width: 480px; border-radius: 16px 16px 0 0; padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
+.sheet-close { display: block; margin: 8px auto 0; color: var(--text-sub); }

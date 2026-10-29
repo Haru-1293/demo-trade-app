@@ -9,6 +9,7 @@ const state = {
   trades: [],
   fxTransactions: [],
   authMode: 'login', // 'login' | 'register'
+  addingAccount: false, // ログイン中に「アカウントを追加」でログイン画面を開いているとき
 };
 
 // ---------- Cookie / CSRF ----------
@@ -41,6 +42,9 @@ async function api(path, options = {}) {
   let json = null;
   try { json = await res.json(); } catch { /* no body */ }
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith('/login') && !path.startsWith('/passkey/') && !path.startsWith('/accounts')) {
+      recoverFromUnauthorized(); // 使っていたアカウントのセッションが切れた／凍結された。ほかのアカウントに入れるなら自動で切り替える
+    }
     const err = new Error(json?.error || `HTTP ${res.status}`);
     err.status = res.status;
     err.detail = json?.detail; // 検証失敗の理由など（パスキーの設定ミスの切り分けに使う）
@@ -86,7 +90,12 @@ function safeNextUrl() {
 }
 
 function render() {
-  document.body.classList.toggle('logged-in', isLoggedIn());
+  document.body.classList.toggle('logged-in', isLoggedIn() && !state.addingAccount);
+  if (state.addingAccount) {
+    disconnectLiveFeed();
+    renderAuth();
+    return;
+  }
   if (isLoggedIn()) {
     const next = safeNextUrl();
     if (next) { location.replace(next); return; }
@@ -102,6 +111,7 @@ function render() {
   app.innerHTML = `
     <header class="app-header">
       <h1>デモトレード</h1>
+      <button type="button" class="account-chip" id="account-chip" aria-label="アカウントの切り替え" aria-haspopup="dialog"><span class="account-avatar" id="account-avatar">…</span><span class="account-chip-name" id="account-chip-name"></span><span aria-hidden="true">▾</span></button>
     </header>
     <div class="market-ticker">
       <div class="ticker-item">
@@ -127,6 +137,8 @@ function render() {
       ${tabButton('settings', '⚙️', '設定')}
     </nav>
   `;
+  document.getElementById('account-chip').addEventListener('click', openAccountSheet);
+  loadAccountChip();
   document.querySelectorAll('.tab-item').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.tab = btn.dataset.tab;
@@ -1430,7 +1442,13 @@ function renderSettings(main) {
       </div>
 
       <div class="section-title">アカウント</div>
-      <button class="btn btn-outline" id="logout-btn">ログアウト</button>
+      <div class="card">
+        <p class="muted-text">この端末で、最大${MAX_ACCOUNTS}つのアカウントに同時にログインして、パスワードを入れ直さずに切り替えられます。切り替えはヘッダー右上の名前からもできます。</p>
+        <div id="account-list" aria-busy="true">${skeletonRows(1)}</div>
+        <button class="btn btn-outline mt-10" id="account-add-btn">＋ アカウントを追加してログイン</button>
+      </div>
+      <button class="btn btn-outline mt-10" id="logout-btn">このアカウントをログアウト</button>
+      <button class="btn btn-outline mt-10" id="logout-all-btn" hidden>すべてのアカウントをログアウト</button>
 
       <div class="section-title danger-title">危険な操作</div>
       <button class="btn btn-danger-outline" id="delete-account-btn">アカウントを削除する</button>
@@ -1460,10 +1478,142 @@ function renderSettings(main) {
       toast(`変更に失敗しました: ${e.message}`);
     }
   });
-  document.getElementById('logout-btn').addEventListener('click', async () => {
-    try { await api('/logout', { method: 'POST' }); } catch { /* noop */ }
-    render();
-  });
+  document.getElementById('logout-btn').addEventListener('click', () => logoutAccount(false));
+  document.getElementById('logout-all-btn').addEventListener('click', () => logoutAccount(true));
+  document.getElementById('account-add-btn').addEventListener('click', startAddAccount);
+  loadAccountList();
+}
+
+// ---------- 複数アカウント（仕様書4.1.1） ----------
+const MAX_ACCOUNTS = 5;
+let accountsCache = null;
+
+async function fetchAccounts() {
+  const { accounts } = await api('/accounts');
+  accountsCache = accounts;
+  return accounts;
+}
+
+// ヘッダーの「名前▾」。取得できなくても、ほかの表示には影響しない
+async function loadAccountChip() {
+  try {
+    const accounts = await fetchAccounts();
+    const me = accounts.find((a) => a.active) || accounts[0];
+    const av = document.getElementById('account-avatar');
+    const nm = document.getElementById('account-chip-name');
+    if (me && av && nm) { av.textContent = Array.from(me.username)[0] || '?'; nm.textContent = me.username; }
+  } catch { /* noop */ }
+}
+
+function accountRowsHtml(accounts) {
+  return accounts.map((a) => `
+    <button type="button" class="account-row${a.active ? ' active' : ''}" data-switch="${escapeHtml(a.user_id)}" ${a.active ? 'aria-current="true"' : ''}>
+      <span class="account-avatar">${escapeHtml(Array.from(a.username)[0] || '?')}</span>
+      <span class="account-row-name">${escapeHtml(a.username)}</span>
+      ${a.active ? '<span class="account-row-badge">使用中</span>' : '<span class="account-row-go">切り替える</span>'}
+    </button>`).join('');
+}
+
+function bindAccountRows(root) {
+  root.querySelectorAll('[data-switch]').forEach((b) => b.addEventListener('click', () => {
+    if (b.classList.contains('active')) return;
+    switchAccount(b.dataset.switch);
+  }));
+}
+
+async function loadAccountList() {
+  const box = document.getElementById('account-list');
+  if (!box) return;
+  try {
+    const accounts = await fetchAccounts();
+    box.innerHTML = accountRowsHtml(accounts);
+    box.removeAttribute('aria-busy');
+    bindAccountRows(box);
+    const addBtn = document.getElementById('account-add-btn');
+    if (addBtn && accounts.length >= MAX_ACCOUNTS) { addBtn.disabled = true; addBtn.textContent = `これ以上は追加できません（最大${MAX_ACCOUNTS}つ）`; }
+    const allBtn = document.getElementById('logout-all-btn');
+    if (allBtn) allBtn.hidden = accounts.length < 2;
+  } catch (e) {
+    box.innerHTML = `<p class="muted-text">読み込みに失敗しました: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function switchAccount(userId) {
+  try {
+    await api('/accounts/switch', { method: 'POST', body: { user_id: userId } });
+    location.reload(); // 画面の状態・ライブ価格・取得済みデータを、切り替え先のアカウントで一から読み直す
+  } catch (e) {
+    toast(`切り替えに失敗しました: ${e.message}`);
+    loadAccountList();
+  }
+}
+
+function startAddAccount() {
+  if (accountsCache && accountsCache.length >= MAX_ACCOUNTS) { toast(`アカウントは最大${MAX_ACCOUNTS}つまでです`); return; }
+  document.getElementById('account-sheet')?.remove();
+  state.addingAccount = true;
+  state.authMode = 'login';
+  render();
+}
+
+function cancelAddAccount() {
+  state.addingAccount = false;
+  render();
+}
+
+async function logoutAccount(all) {
+  try {
+    const r = await api('/logout', { method: 'POST', body: all ? { all: true } : {} });
+    if (r.active_user_id) { location.reload(); return; } // ほかのアカウントに切り替わった
+  } catch { /* noop */ }
+  location.reload();
+}
+
+// ヘッダーから開く、アカウント切り替えのシート（LINE/Instagram風）
+async function openAccountSheet() {
+  if (document.getElementById('account-sheet')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay sheet-overlay';
+  overlay.id = 'account-sheet';
+  overlay.innerHTML = `
+    <div class="modal sheet" role="dialog" aria-modal="true" aria-label="アカウントの切り替え">
+      <div class="modal-title">アカウント</div>
+      <div id="sheet-accounts" aria-busy="true">${skeletonRows(1)}</div>
+      <button class="btn btn-outline mt-10" id="sheet-add">＋ アカウントを追加</button>
+      <button class="btn btn-outline mt-10" id="sheet-logout">このアカウントをログアウト</button>
+      <button class="btn-link sheet-close" id="sheet-close">閉じる</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('sheet-close').addEventListener('click', close);
+  document.getElementById('sheet-add').addEventListener('click', startAddAccount);
+  document.getElementById('sheet-logout').addEventListener('click', () => logoutAccount(false));
+  try {
+    const accounts = await fetchAccounts();
+    const box = document.getElementById('sheet-accounts');
+    if (!box) return;
+    box.innerHTML = accountRowsHtml(accounts);
+    box.removeAttribute('aria-busy');
+    bindAccountRows(box);
+    if (accounts.length >= MAX_ACCOUNTS) { const b = document.getElementById('sheet-add'); b.disabled = true; b.textContent = `最大${MAX_ACCOUNTS}つまで`; }
+  } catch (e) {
+    const box = document.getElementById('sheet-accounts');
+    if (box) box.innerHTML = `<p class="muted-text">読み込みに失敗しました: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// 使っていたアカウントの認証が切れたとき（期限切れ・凍結・削除）。ほかにログイン中のアカウントがあれば自動で切り替える。1回の読み込みにつき1度だけ
+let recovering = false;
+async function recoverFromUnauthorized() {
+  if (recovering) return;
+  recovering = true;
+  try {
+    const accounts = await fetchAccounts(); // 失効したアカウントは、サーバーが一覧から外す（全部失効ならCookieも消える）
+    const next = accounts[0];
+    if (next) await api('/accounts/switch', { method: 'POST', body: { user_id: next.user_id } });
+  } catch { /* noop */ }
+  location.reload();
 }
 
 // ---------- パスキー（標準ユーザー、仕様書4.16） ----------
@@ -1526,6 +1676,7 @@ async function loginWithPasskey() {
       },
     });
     toast('パスキーでログインしました');
+    if (state.addingAccount) { state.addingAccount = false; location.reload(); return; }
     render();
   } catch (e) {
     toast(e && e.status ? passkeyErrorMessage(e) : `パスキーでログインできませんでした: ${passkeyErrorMessage(e)}`);
@@ -1773,6 +1924,7 @@ function renderAuth() {
       ${isLogin && passkeySupported() ? `
       <div class="auth-or"><span>または</span></div>
       <button class="btn btn-outline" id="passkey-login-btn">🔑 パスキーでログイン</button>` : ''}
+      ${state.addingAccount ? '<button class="btn btn-outline mt-10" id="auth-cancel-add">キャンセル（いまのアカウントに戻る）</button>' : ''}
       <div class="auth-switch">
         ${isLogin ? 'アカウントをお持ちでない方は' : 'すでにアカウントをお持ちの方は'}
         <button class="btn-link" id="auth-switch-btn">${isLogin ? '新規登録' : 'ログイン'}</button>
@@ -1780,6 +1932,8 @@ function renderAuth() {
     </div>
   `;
   renderTurnstile();
+  const cancelAdd = document.getElementById('auth-cancel-add');
+  if (cancelAdd) cancelAdd.addEventListener('click', cancelAddAccount);
   if (!isLogin) bindRegisterRequirements();
   const passkeyBtn = document.getElementById('passkey-login-btn');
   if (passkeyBtn) passkeyBtn.addEventListener('click', loginWithPasskey);
@@ -1807,6 +1961,7 @@ function renderAuth() {
         toast('登録しました');
         state.authMode = 'login';
       }
+      if (state.addingAccount) { state.addingAccount = false; location.reload(); return; } // 追加したアカウントで、一から読み直す
       render();
     } catch (e) {
       toast(`失敗しました: ${e.message}`);

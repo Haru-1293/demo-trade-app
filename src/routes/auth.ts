@@ -8,7 +8,7 @@ import {
   verifyPassword,
   hashSessionToken,
 } from '../services/crypto';
-import { issueSession } from '../services/session';
+import { issueSession, loggedInAccounts, writeAccounts, sessionCookieName, candidateTokens, MAX_ACCOUNTS } from '../services/session';
 import { verifyTurnstile } from '../services/turnstile';
 import { validateUsername, validatePassword } from '../services/validation';
 
@@ -117,18 +117,46 @@ app.post('/login', async (c) => {
   return c.json({ ok: true, csrf_token: csrfToken });
 });
 
-/** POST /api/logout — 仕様書4.1 */
+/**
+ * POST /api/logout — 仕様書4.1 / 4.1.1
+ * いま使っているアカウントだけをログアウトする。ほかにログイン中のアカウントがあれば、そのうち先頭のアカウントに切り替える。
+ * `{ "all": true }` を渡すと、この端末のすべてのアカウントをログアウトする。
+ */
 app.post('/logout', requireCsrf, requireAuth, async (c) => {
-  const cookieName = c.env.SESSION_COOKIE_NAME || 'session';
-  const cookieHeader = c.req.header('Cookie') ?? '';
-  const match = cookieHeader.match(new RegExp(`(?:^|; )${cookieName}=([^;]+)`));
-  if (match?.[1]) {
-    const idHash = await hashSessionToken(decodeURIComponent(match[1]));
-    await c.env.DB.prepare(`DELETE FROM sessions WHERE id_hash = ?`).bind(idHash).run();
+  const body = await c.req.json<{ all?: boolean }>().catch(() => null);
+  const accounts = await loggedInAccounts(c);
+  const activeToken = (c.req.header('Cookie') ?? '').match(new RegExp(`(?:^|; )${sessionCookieName(c)}=([^;]+)`))?.[1];
+  const targets = body?.all === true ? accounts : accounts.filter((a) => a.token === activeToken);
+  for (const a of targets) {
+    await c.env.DB.prepare(`DELETE FROM sessions WHERE id_hash = ?`).bind(await hashSessionToken(a.token)).run();
   }
-  c.header('Set-Cookie', `${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
-  c.header('Set-Cookie', `csrf_token=; Secure; SameSite=Lax; Path=/; Max-Age=0`, { append: true });
-  return c.json({ ok: true });
+  const rest = accounts.filter((a) => !targets.includes(a));
+  writeAccounts(c, rest);
+  return c.json({ ok: true, active_user_id: rest[0]?.userId ?? null });
+});
+
+/** GET /api/accounts — この端末でログイン中のアカウント一覧（仕様書4.1.1）。失効したものはここで一覧から外す */
+app.get('/accounts', async (c) => {
+  const accounts = await loggedInAccounts(c);
+  const stale = candidateTokens(c).length !== accounts.length;
+  if (stale || !accounts.length) writeAccounts(c, accounts, accounts[0]?.userId);
+  const activeToken = (c.req.header('Cookie') ?? '').match(new RegExp(`(?:^|; )${sessionCookieName(c)}=([^;]+)`))?.[1];
+  const activeId = accounts.find((a) => a.token === activeToken)?.userId ?? null;
+  return c.json({
+    accounts: accounts.map((a) => ({ user_id: a.userId, username: a.username, active: a.userId === activeId })),
+    max: MAX_ACCOUNTS,
+  });
+});
+
+/** POST /api/accounts/switch — ログイン中の別のアカウントに切り替える（再ログイン不要。仕様書4.1.1） */
+app.post('/accounts/switch', requireCsrf, async (c) => {
+  const body = await c.req.json<{ user_id?: string }>().catch(() => null);
+  if (!body || typeof body.user_id !== 'string' || body.user_id.length > 100) return c.json({ error: 'invalid body' }, 400);
+  const accounts = await loggedInAccounts(c);
+  const target = accounts.find((a) => a.userId === body.user_id);
+  if (!target) return c.json({ error: 'not logged in as that account' }, 404);
+  writeAccounts(c, accounts, target.userId);
+  return c.json({ ok: true, user_id: target.userId, username: target.username });
 });
 
 /**
@@ -197,10 +225,10 @@ app.post('/account/delete', requireCsrf, requireAuth, async (c) => {
       .bind(Math.floor(Date.now() / 1000), uid),
   ]);
 
-  const cookieName = c.env.SESSION_COOKIE_NAME || 'session';
-  c.header('Set-Cookie', `${cookieName}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
-  c.header('Set-Cookie', `csrf_token=; Secure; SameSite=Lax; Path=/; Max-Age=0`, { append: true });
-  return c.json({ ok: true });
+  // 削除したアカウントのセッションはDBから消えているので、残りの有効なアカウントだけをCookieに残す（先頭に切り替わる）
+  const rest = await loggedInAccounts(c);
+  writeAccounts(c, rest);
+  return c.json({ ok: true, active_user_id: rest[0]?.userId ?? null });
 });
 
 export default app;
