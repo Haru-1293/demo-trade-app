@@ -2,7 +2,8 @@
 
 **文書版数:** 2.11 **仕様確定日:** 2026年9月13日（v2.2 改訂: 2026年9月13日 / v2.3 改訂: 2026年10月2日 / v2.4 改訂: 2026年10月3日 / v2.5 改訂: 2026年10月4日 / v2.6 改訂: 2026年10月6日 / v2.7 改訂: 2026年10月7日 / v2.8 改訂: 2026年10月11日 / v2.9 改訂: 2026年10月13日 / v2.10 改訂: 2026年10月17日 / v2.11 改訂: 2026年10月29日） **対象フェーズ:** MVP **用途:** 学習、デモ、シミュレーション専用
 
-### v2.11 での変更点（v2.10 からの差分、複数アカウントの同時ログイン）
+### v2.11 での変更点（v2.10 からの差分、複数アカウントの同時ログイン、MCPからの両替）
+- **MCPから両替できるようにした**（4.6）。ツール `exchange_currency`（`trade:write`、円⇔ドル、`direction` と両替元通貨の `amount`）と `get_fx_transactions`（`portfolio:read`、両替履歴）を追加。画面と同じ処理（`services/fxService.ts`）を使い、残高の引き落とし・入金・履歴の記録を1つのbatchで行う（途中で失敗しても資金が消えず、残高不足は全体を巻き戻して `insufficient funds`）。MCPの頻度制限は、直近60秒の両替数をD1で数える（上限は画面と同じ `FX_EXCHANGE_RATE_LIMIT_PER_MIN`、既定5回）。金額は小数2桁まで。
 - **1つの端末（ブラウザ）で、最大5つのアカウントに同時にログインして、切り替えられるようにした**（4.1.1）。ヘッダー右上の「名前▾」から切り替えシート（切り替え・アカウントを追加・このアカウントをログアウト）を開ける。設定画面の「アカウント」にも一覧と同じ操作がある。切り替えにパスワードの入力は不要。
 - ログイン中に「アカウントを追加」からログイン／新規登録／パスキーでログインすると、いまのアカウントはログインしたまま、追加したアカウントに切り替わる（同じアカウントで入り直したときは、古いセッションを破棄して置き換える）。6つ目は 409。
 - ログアウトは「使っているアカウントだけ」。ほかにログイン中のアカウントがあれば、そのうち先頭に切り替わる。「すべてのアカウントをログアウト」もある。アカウント削除・凍結・セッション期限切れのときも、ほかのアカウントに自動で切り替える（なければログイン画面）。
@@ -490,7 +491,8 @@ Cloudflare Workers（`/mcp`、`/oauth/*`、`/.well-known/*`）+ D1
   3. Worker が最新為替レート（60秒キャッシュ利用可）を取得。
   4. 両替元通貨の残高が指定額以上かを検証し、通過した場合のみ同一トランザクション内で両通貨の `cash_balance_*_c` を更新（両替元を減算、両替先を加算）。結果額は 0.01 未満切り捨て。
   5. `fx_transactions` に履歴を記録する。
-  6. 両替は即時実行のみとし、指値のような「予約両替」はMVPでは提供しない。
+  6. MCPの `exchange_currency` も同じ処理（`services/fxService.ts`）を通る。MCPでは頻度制限をD1で数える（直近60秒、既定5回）。
+  7. 両替は即時実行のみとし、指値のような「予約両替」はMVPでは提供しない。
 
 ### 4.7 取引・注文・両替履歴の閲覧
 
@@ -653,9 +655,9 @@ Cloudflare Workers（`/mcp`、`/oauth/*`、`/.well-known/*`）+ D1
 
 | スコープ | 内容 | ツール |
 |---|---|---|
-| `portfolio:read` | 資産・保有・注文履歴・取引履歴の閲覧 | `get_account_summary`・`get_holdings`・`get_orders`・`get_trades` |
+| `portfolio:read` | 資産・保有・注文履歴・取引履歴・両替履歴の閲覧 | `get_account_summary`・`get_holdings`・`get_orders`・`get_trades`・`get_fx_transactions` |
 | `market:read` | 銘柄検索・現在値の参照 | `search_symbols`・`get_prices` |
-| `trade:write` | 注文の発注・取消・修正（**デモ資金が動く**） | `place_market_order`・`place_limit_order`・`cancel_order`・`modify_order` |
+| `trade:write` | 注文の発注・取消・修正、両替（**デモ資金が動く**） | `place_market_order`・`place_limit_order`・`cancel_order`・`modify_order`・`exchange_currency` |
 
 スコープは互いに包含しない。付与されたスコープは `oauth_grants.scope` に保存し、トークンの応答の `scope` に返す。
 
@@ -707,6 +709,8 @@ Cloudflare Workers（`/mcp`、`/oauth/*`、`/.well-known/*`）+ D1
 | `place_limit_order` | `trade:write` | 指値注文（4.3）。上に加え `order_type`・`target_price`・`expires_date`（取引所の現地日付、当日から14日先まで） |
 | `cancel_order` | `trade:write` | 未約定（PENDING）の注文の取消。ロックした資金・株数を返す |
 | `modify_order` | `trade:write` | 未約定（PENDING）の指値注文の指値価格・数量・有効期限の修正（4.3.1）。`order_id` と、変えたい項目だけを渡す |
+| `exchange_currency` | `trade:write` | 円⇔ドルの両替（4.6）。`direction`（`JPY_TO_USD`/`USD_TO_JPY`）・`amount`（両替元通貨の金額、小数2桁まで）。サーバーの現在レートで即時・手数料なし・端数切り捨て。ロック中の資金は対象外。直近60秒に上限回数まで |
+| `get_fx_transactions` | `portfolio:read` | 自分の両替履歴（新しい順）。`limit`（既定20、最大100） |
 
 - **注文は既存のAPIと同一の処理**（`services/orderService.ts`）を呼ぶ。余力・売却可能株数の検証、資金ロック、全量約定または却下、冪等性キー（自分の注文の範囲）はそのまま。
 - ツールの失敗（残高不足・銘柄なし・市場データ取得不可など）は、JSON-RPCエラーではなく、`isError: true` のツール結果として返す（AIが直して再試行できるように）。未知のツール名・不正な引数の形は、プロトコルエラー（`-32602`）。

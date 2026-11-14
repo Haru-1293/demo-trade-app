@@ -150,6 +150,8 @@ curl -s -X POST https://demo-trade-app.haru-tkh11.workers.dev/oauth/register \
 | `place_limit_order` | `trade:write` | 指値注文（`BUY_LIMIT` / `SELL_LIMIT`） |
 | `cancel_order` | `trade:write` | 未約定の注文を取り消す |
 | `modify_order` | `trade:write` | 未約定の指値注文の価格・数量・有効期限を変える |
+| `exchange_currency` | `trade:write` | 円⇔ドルの両替 |
+| `get_fx_transactions` | `portfolio:read` | 両替履歴 |
 
 付与された権限で使えないツールは、一覧に表示されません。
 

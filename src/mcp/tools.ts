@@ -4,6 +4,7 @@ import { checkPendingLimitOrders } from '../services/limitCheck';
 import { fetchPricesAndRate, valueHoldings, totalAssetsJpyC, fetchLockedFunds, type HoldLot } from '../services/valuation';
 import { getDisplayPrices } from '../services/marketData';
 import { settlementCurrencyOf } from '../services/balance';
+import { exchangeCurrency } from '../services/fxService';
 import { placeMarketOrder, placeLimitOrder, cancelOrder, modifyLimitOrder } from '../services/orderService';
 
 /**
@@ -408,6 +409,81 @@ export const TOOLS: ToolDef[] = [
     async run({ env, userId }, args) {
       const { order_id, ...changes } = args as Record<string, unknown>;
       return orderOutcome(await modifyLimitOrder(env, userId, reqString(args, 'order_id', 100), changes));
+    },
+  },
+  {
+    name: 'exchange_currency',
+    title: '両替',
+    description:
+      '円とドルを両替する（サーバーが取得した現在のUSD/JPYレートで即時、手数料なし、端数は切り捨て）。デモ資金が動く。' +
+      'direction: JPY_TO_USD=円→ドル, USD_TO_JPY=ドル→円。amount は両替元の通貨の金額（円またはドル。小数は2桁まで）。' +
+      '注文でロック中の資金は両替できない（現金残高の範囲）。事前に get_account_summary で残高を、get_prices(JPY=X) でレートを確認できる。',
+    scope: 'trade:write',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        direction: { type: 'string', enum: ['JPY_TO_USD', 'USD_TO_JPY'] },
+        amount: { type: 'number', exclusiveMinimum: 0, description: '両替元の通貨の金額（JPY_TO_USDなら円、USD_TO_JPYならドル）' },
+      },
+      required: ['direction', 'amount'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    async run({ env, userId }, args) {
+      const direction = args.direction;
+      if (direction !== 'JPY_TO_USD' && direction !== 'USD_TO_JPY') throw new ToolError('direction must be JPY_TO_USD or USD_TO_JPY');
+      const amount = args.amount;
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) throw new ToolError('amount must be a positive number');
+      const amountC = Math.round(amount * 100);
+      if (Math.abs(amountC - amount * 100) > 1e-6) throw new ToolError('amount can have at most 2 decimal places');
+      // 頻度制限（AIの暴走・ループの防止）。直近60秒の両替数をD1で数えるので厳密
+      const limit = Math.max(1, Number(env.FX_EXCHANGE_RATE_LIMIT_PER_MIN || '5') || 5);
+      const since = Math.floor(Date.now() / 1000) - 60;
+      const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM fx_transactions WHERE user_id = ? AND executed_at >= ?`)
+        .bind(userId, since)
+        .first<{ n: number }>();
+      if ((row?.n ?? 0) >= limit) throw new ToolError(`両替が多すぎます（直近60秒で${limit}回まで）。しばらく待ってからやり直してください。 / Too many exchanges; wait a minute.`);
+      const r = await exchangeCurrency(env, userId, direction, amountC);
+      if (r.status >= 400) throw new ToolError(String(r.body.error ?? `error ${r.status}`));
+      const src = direction === 'JPY_TO_USD' ? 'JPY' : 'USD';
+      const dst = direction === 'JPY_TO_USD' ? 'USD' : 'JPY';
+      return {
+        ok: true,
+        direction,
+        source_currency: src,
+        source_amount: money(amountC),
+        result_currency: dst,
+        result_amount: money(r.body.result_amount_c as number),
+        fx_rate: r.body.fx_rate,
+      };
+    },
+  },
+  {
+    name: 'get_fx_transactions',
+    title: '両替履歴',
+    description: '自分の両替の履歴（新しい順）。',
+    scope: 'portfolio:read',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', minimum: 1, maximum: 100, description: '省略時20' } },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    async run({ env, userId }, args) {
+      const limit = optLimit(args, 20, 100);
+      const { results } = await env.DB.prepare(`SELECT * FROM fx_transactions WHERE user_id = ? ORDER BY executed_at DESC LIMIT ?`)
+        .bind(userId, limit)
+        .all<{ id: string; direction: string; source_amount_c: number; fx_rate: number; result_amount_c: number; executed_at: number }>();
+      return {
+        transactions: (results ?? []).map((t) => ({
+          id: t.id,
+          direction: t.direction,
+          source_amount: money(t.source_amount_c),
+          result_amount: money(t.result_amount_c),
+          fx_rate: t.fx_rate,
+          executed_at: iso(t.executed_at),
+        })),
+      };
     },
   },
 ];
