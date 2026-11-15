@@ -9,7 +9,7 @@ const state = {
   trades: [],
   fxTransactions: [],
   authMode: 'login', // 'login' | 'register'
-  addingAccount: false, // ログイン中に「アカウントを追加」でログイン画面を開いているとき
+  addingAccount: false, // ログイン中に「アカウントを追加」でログイン画面を開いているとき（承認画面からは ?add=1&next=… で開く）
 };
 
 // ---------- Cookie / CSRF ----------
@@ -82,12 +82,14 @@ function safeNextUrl() {
   try {
     const u = new URL(raw, location.origin);
     if (u.origin !== location.origin) return null;
-    if (u.pathname !== '/oauth-consent.html') return null;
+    if (u.pathname !== '/oauth-consent.html' && u.pathname !== '/oauth-consent') return null; // 静的アセットは .html なしのURLへ正規化されることがある
     return u.pathname + u.search;
   } catch {
     return null;
   }
 }
+
+if (new URLSearchParams(location.search).get('add') === '1' && safeNextUrl()) state.addingAccount = true;
 
 function render() {
   document.body.classList.toggle('logged-in', isLoggedIn() && !state.addingAccount);
@@ -1556,8 +1558,17 @@ function startAddAccount() {
   render();
 }
 
+// 追加ログインが済んだ／やめたあと。承認画面から来たときはそこへ戻り、それ以外は読み込み直す
+function finishAddAccount() {
+  state.addingAccount = false;
+  const next = safeNextUrl();
+  if (next) location.replace(next); else location.reload();
+}
+
 function cancelAddAccount() {
   state.addingAccount = false;
+  const next = safeNextUrl();
+  if (next) { location.replace(next); return; }
   render();
 }
 
@@ -1676,7 +1687,7 @@ async function loginWithPasskey() {
       },
     });
     toast('パスキーでログインしました');
-    if (state.addingAccount) { state.addingAccount = false; location.reload(); return; }
+    if (state.addingAccount) { finishAddAccount(); return; }
     render();
   } catch (e) {
     toast(e && e.status ? passkeyErrorMessage(e) : `パスキーでログインできませんでした: ${passkeyErrorMessage(e)}`);
@@ -1961,7 +1972,7 @@ function renderAuth() {
         toast('登録しました');
         state.authMode = 'login';
       }
-      if (state.addingAccount) { state.addingAccount = false; location.reload(); return; } // 追加したアカウントで、一から読み直す
+      if (state.addingAccount) { finishAddAccount(); return; } // 追加したアカウントで、一から読み直す
       render();
     } catch (e) {
       toast(`失敗しました: ${e.message}`);

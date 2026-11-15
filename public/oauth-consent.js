@@ -96,13 +96,20 @@ async function main() {
         <p class="consent-meta consent-center">${redirectHint(info.redirect)}</p>
         ${info.redirect.kind === 'loopback' ? '<div class="consent-warn">心当たりのないアプリは許可しないでください。この端末上の別のプログラムが、アプリになりすませる場合があります。</div>' : ''}
       </div>
+      <div class="section-title">接続するアカウント</div>
+      <div class="card" id="consent-accounts">
+        <div class="account-row active" aria-current="true">
+          <span class="account-avatar">${escapeHtml(Array.from(info.username)[0] || '?')}</span>
+          <span class="account-row-name">${escapeHtml(info.username)}</span>
+          <span class="account-row-badge">使用中</span>
+        </div>
+      </div>
       <div class="section-title">許可する権限</div>
       <div class="card" id="perm-list">${perms}</div>
       <div class="consent-actions">
         <button type="button" class="btn btn-primary" id="allow-btn">許可する</button>
         <button type="button" class="btn btn-outline" id="deny-btn">キャンセル</button>
       </div>
-      <p class="consent-user">ログイン中: ${escapeHtml(info.username)}　<button type="button" class="link-btn" id="switch-btn">別のアカウントで続ける</button></p>
       <p class="consent-meta consent-center">許可はいつでも、アプリの「設定」→「連携アプリ」から取り消せます。</p>
     </div>`;
 
@@ -135,9 +142,39 @@ async function main() {
   }
   allowBtn.addEventListener('click', () => decide(true));
   denyBtn.addEventListener('click', () => decide(false));
-  document.getElementById('switch-btn').addEventListener('click', async () => {
-    try { await api('/logout', { method: 'POST' }); } catch { /* noop */ }
-    goLogin();
+  loadAccounts(info);
+}
+
+// この端末でログイン中のほかのアカウントに切り替える（再ログイン不要。仕様書4.1.1 / 4.17）。切り替えたら、同じ認可リクエストを読み込み直す
+async function loadAccounts(info) {
+  const box = document.getElementById('consent-accounts');
+  let accounts = [];
+  try { accounts = (await api('/accounts')).accounts; } catch { /* 取得できなくても、承認の操作には影響しない */ }
+  const max = 5;
+  const others = accounts.filter((a) => !a.active);
+  box.insertAdjacentHTML('beforeend', others.map((a) => `
+    <button type="button" class="account-row" data-switch="${escapeHtml(a.user_id)}">
+      <span class="account-avatar">${escapeHtml(Array.from(a.username)[0] || '?')}</span>
+      <span class="account-row-name">${escapeHtml(a.username)}</span>
+      <span class="account-row-go">このアカウントで接続</span>
+    </button>`).join('') + (accounts.length < max
+      ? '<button type="button" class="account-row" id="consent-add"><span class="account-avatar">＋</span><span class="account-row-name">別のアカウントでログイン</span></button>'
+      : ''));
+  box.querySelectorAll('[data-switch]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try {
+      await api('/accounts/switch', { method: 'POST', body: { user_id: b.dataset.switch } });
+      location.reload();
+    } catch (e) {
+      b.disabled = false;
+      if (e.status === 401 || e.status === 404) location.reload();
+      else showError(e.message);
+    }
+  }));
+  const add = document.getElementById('consent-add');
+  if (add) add.addEventListener('click', () => {
+    // ほかのアカウントをログインしたまま追加して、この画面に戻る（add=1 はアプリのログイン画面が「アカウントの追加」として開く合図）
+    location.href = '/?add=1&next=' + encodeURIComponent(location.pathname + location.search);
   });
 }
 
